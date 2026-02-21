@@ -65,14 +65,14 @@
 
 #define LINN_DISABLE_COPY(CLASS)           \
   CLASS(const CLASS&)            = delete; \
-  CLASS& operator=(const CLASS&) = delete
+  CLASS& operator=(const CLASS&) = delete;
 
 #define LINN_DISABLE_MOVE(CLASS)      \
   CLASS(CLASS&&)            = delete; \
-  CLASS& operator=(CLASS&&) = delete
+  CLASS& operator=(CLASS&&) = delete;
 
 #define LINN_DISABLE_COPY_MOVE(CLASS) \
-  LINN_DISABLE_COPY(CLASS);           \
-  LINN_DISABLE_MOVE(CLASS);
+  LINN_DISABLE_COPY(CLASS)            \
+  LINN_DISABLE_MOVE(CLASS)
 
 #endif // !LINN_UTILS_H_

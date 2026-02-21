@@ -17,11 +17,18 @@
 // #include <tbb/parallel_for.h>
 // #include <tbb/parallel_invoke.h>
 // #include <tbb/parallel_sort.h>
+#include <macro/LinnSingleton.h>
+
+class A
+{
+  LINN_SINGLETON_CREATE(LINN_SINGLETON_UNIQUE(A));
+};
 
 int main()
 {
   using namespace std::literals;
   std::ios_base::sync_with_stdio(false);
   std::cout.setf(std::ios_base::boolalpha);
+
   return 0;
 }
