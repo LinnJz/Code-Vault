@@ -3,7 +3,7 @@
 
 add_executable(${PROJECT_NAME} 
     main.cpp 
-)
+ "radix_sort/msvc_ppl.cpp")
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
     WIN32_EXECUTABLE OFF    # 在 Windows 系统中，运行时不启动控制台窗口，默认OFF
@@ -15,7 +15,8 @@ endif()
 
 find_package(TBB COMPONENTS tbb tbbmalloc tbbmalloc_proxy REQUIRED HINTS ${VCPKG_CMAKE_SHARED_PATH})
 find_package(benchmark REQUIRED COMPONENTS benchmark benchmark_main HINTS ${VCPKG_CMAKE_SHARED_PATH})
-
+find_package(frozen REQUIRED HINTS ${VCPKG_CMAKE_SHARED_PATH})
+find_package(magic_enum REQUIRED HINTS ${VCPKG_CMAKE_SHARED_PATH})
 target_include_directories(${PROJECT_NAME} PRIVATE 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
