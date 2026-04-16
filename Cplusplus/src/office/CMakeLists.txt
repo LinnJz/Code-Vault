@@ -1,17 +1,17 @@
 ﻿cmake_minimum_required(VERSION 3.28)
 
-project(CUDA
+project(office
     VERSION 1.0.0
     DESCRIPTION ""
     HOMEPAGE_URL ""
     LANGUAGES CXX
 )
 
-FILE(GLOB Src_CUDA CONFIGURE_DEPENDS *.h *.cpp *.hpp *.cu)
-source_group(Src_CUDA FILES ${Src_CUDA})
+FILE(GLOB Src_Office CONFIGURE_DEPENDS *.h *.cpp *.hpp)
+source_group(Src_Office FILES ${Src_Office})
 
 set(PROJECT_SOURCES
-    ${Src_CUDA}
+    ${Src_Office}
 )
 add_executable(
     ${PROJECT_NAME}
@@ -21,16 +21,12 @@ add_executable(
 target_include_directories(${PROJECT_NAME} PRIVATE 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
-target_compile_options(${PROJECT_NAME} PRIVATE 
-    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     PROJECT_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
     LINN_PROPERTY_ENABLE_SHORT_MACROS
     LINN_SINGLETON_ENABLE_SHORT_MACROS
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES
-    CXX_STANDARD 20
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE ON
@@ -38,5 +34,4 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     LINK_WHAT_YOU_USE ON
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     VS_DEBUGGER_COMMAND "$<TARGET_FILE:${PROJECT_NAME}>"
-    CUDA_SEPARABLE_COMPILATION ON #启用分离编译，对于复杂CUDA项目为必须
 )

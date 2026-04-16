@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package benchmark;
+
+enum TaskStatus {
+  TODO = 0;
+  IN_PROGRESS = 1;
+  DONE = 2;
+}
+
+message Address {
+  string street = 1;
+  string city = 2;
+  string state = 3;
+  string zip = 4;
+  string country = 5;
+}
+
+message Contact {
+  string name = 1;
+  string relationship = 2;
+  string phone = 3;
+}
+
+message Employee {
+  uint32 id = 1;
+  string name = 2;
+  string email = 3;
+  float salary = 4;
+  string hire_date = 5;                // YYYY-MM-DD
+  repeated Address addresses = 6;
+  repeated string phone_numbers = 7;
+  map<string, string> attributes = 8;
+  Contact emergency_contact = 9;
+  repeated string roles = 10;
+  repeated float performance_scores = 11;
+  bytes metadata = 12;                  // 模拟二进制数据
+}
+
+message Comment {
+  string author = 1;
+  string text = 2;
+  uint64 timestamp = 3;
+}
+
+message Task {
+  string title = 1;
+  string description = 2;
+  TaskStatus status = 3;
+  uint32 assigned_employee_id = 4;      // 用 ID 引用，避免循环嵌套
+  repeated Comment comments = 5;
+}
+
+message Project {
+  string name = 1;
+  uint32 id = 2;
+  string description = 3;
+  string start_date = 4;
+  optional string end_date = 5;          // proto3 使用 optional 需要特别标志
+  repeated Task tasks = 6;
+}
+
+message Team {
+  string name = 1;
+  uint32 id = 2;
+  Employee leader = 3;
+  repeated Employee members = 4;
+  repeated Project projects = 5;
+}
+
+message Department {
+  string name = 1;
+  uint32 id = 2;
+  uint32 floor = 3;
+  repeated Team teams = 4;
+  map<string, string> metadata = 5;
+}
+
+message Organization {
+  string name = 1;
+  uint64 id = 2;
+  string founded_date = 3;               // YYYY-MM-DD
+  Address headquarters = 4;
+  repeated Department departments = 5;
+  map<string, string> tags = 6;
+}

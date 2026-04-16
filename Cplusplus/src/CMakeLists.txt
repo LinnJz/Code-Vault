@@ -1,45 +1,38 @@
-﻿# file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "*.cpp" "*.cxx" "*.cc")
-# file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS "*.h" "*.hpp" "*.hxx")
+﻿cmake_minimum_required(VERSION 3.28)
 
-add_executable(${PROJECT_NAME} 
-    main.cpp 
- "radix_sort/msvc_ppl.cpp")
-
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    WIN32_EXECUTABLE OFF    # 在 Windows 系统中，运行时不启动控制台窗口，默认OFF
-    LINK_WHAT_YOU_USE ON    # 告诉编译器不要自动剔除没有引用符号的链接库，默认OFF
+project(main
+    VERSION 1.0.0
+    DESCRIPTION ""
+    HOMEPAGE_URL ""
+    LANGUAGES CXX
 )
-if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    setup_target_path(${PROJECT_NAME})
-endif()
 
-find_package(TBB COMPONENTS tbb tbbmalloc tbbmalloc_proxy REQUIRED HINTS ${VCPKG_CMAKE_SHARED_PATH})
-find_package(benchmark REQUIRED COMPONENTS benchmark benchmark_main HINTS ${VCPKG_CMAKE_SHARED_PATH})
-find_package(frozen REQUIRED HINTS ${VCPKG_CMAKE_SHARED_PATH})
-find_package(magic_enum REQUIRED HINTS ${VCPKG_CMAKE_SHARED_PATH})
+FILE(GLOB Src CONFIGURE_DEPENDS *.h *.cpp *.hpp)
+source_group(Src FILES ${Src})
+
+set(PROJECT_SOURCES
+    ${Src}
+)
+add_executable(
+    ${PROJECT_NAME}
+    ${PROJECT_SOURCES}
+)
+
+include(Dependencies.cmake)
 target_include_directories(${PROJECT_NAME} PRIVATE 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    TBB::tbb
-    TBB::tbbmalloc
-    TBB::tbbmalloc_proxy
-    benchmark::benchmark
-    benchmark::benchmark_main
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PROJECT_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    LINN_PROPERTY_ENABLE_SHORT_MACROS
+    LINN_SINGLETON_ENABLE_SHORT_MACROS
 )
-
-# 主程序需要的DLL列表
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(MAIN_DLL_LIST
-        "tbb12_debug.dll"
-        "benchmark*.dll"
-    )
-    copy_dlls_to_target(${PROJECT_NAME} "${MAIN_DLL_LIST}" ${VCPKG_DEBUG_BIN_PATH})
-else()
-    set(MAIN_DLL_LIST
-        "tbb12.dll"
-        "benchmark*.dll"
-    )
-    copy_dlls_to_target(${PROJECT_NAME} "${MAIN_DLL_LIST}" ${VCPKG_BIN_PATH})
-endif()
-
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE ON
+    WIN32_EXECUTABLE OFF          # ON = 关闭控制台窗口（Windows GUI应用）
+    LINK_WHAT_YOU_USE ON
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    VS_DEBUGGER_COMMAND "$<TARGET_FILE:${PROJECT_NAME}>"
+)

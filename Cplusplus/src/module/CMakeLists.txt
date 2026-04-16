@@ -1,40 +1,60 @@
-﻿file(GLOB_RECURSE MODULE_INTERFACES CONFIGURE_DEPENDS "*.ixx")
-file(GLOB_RECURSE MODULE_SOURCES CONFIGURE_DEPENDS "*.cpp")
+﻿cmake_minimum_required(VERSION 3.28)
 
-if(MODULE_INTERFACES OR MODULE_SOURCES)
-    add_library(simple_module)
-    target_sources(simple_module PUBLIC
-        FILE_SET simple_module
-        TYPE CXX_MODULES
-        BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${VC_MODULES_DIR}
-        FILES ${MODULE_INTERFACES} ${VC_MODULES_DIR}/std.ixx ${VC_MODULES_DIR}/std.compat.ixx
-    )
-    set_target_properties(simple_module PROPERTIES
-        CXX_STANDARD 23
-        CXX_STANDARD_REQUIRED ON
-        CXX_EXTENSIONS OFF
-        COMPILE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/pdb
-        COMPILE_PDB_NAME "simple_module"
-    )
+project(Module
+    VERSION 1.0.0
+    DESCRIPTION ""
+    HOMEPAGE_URL ""
+    LANGUAGES CXX
+)
 
-    add_executable(module_exe ${MODULE_SOURCES})
-    set_target_properties(module_exe PROPERTIES
-        CXX_STANDARD 23
-        CXX_STANDARD_REQUIRED ON
-        WIN32_EXECUTABLE OFF
-        LINK_WHAT_YOU_USE ON
-        COMPILE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/pdb
-        PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/pdb
-        COMPILE_PDB_NAME "module_exe"
-        PDB_NAME "module_exe"
-    )
+FILE(GLOB Src_Module CONFIGURE_DEPENDS *.h *.cpp *.hpp *.ixx)
+source_group(Src_Module FILES ${Src_Module})
 
-    if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        setup_target_path(module_exe)
-    endif()
+set(PROJECT_SOURCES
+    ${Src_Module}
+)
 
-    target_include_directories(module_exe PRIVATE 
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    )
-    target_link_libraries(module_exe PRIVATE simple_module)
-endif()
+add_library(simple_module)
+target_sources(simple_module PUBLIC
+    FILE_SET simple_module
+    TYPE CXX_MODULES
+    BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${VC_MODULES_DIR}
+    FILES ${MODULE_INTERFACES} ${VC_MODULES_DIR}/std.ixx ${VC_MODULES_DIR}/std.compat.ixx
+)
+set_target_properties(simple_module PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    COMPILE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/pdb
+    COMPILE_PDB_NAME "simple_module"
+)
+
+add_executable(
+    ${PROJECT_NAME}
+    ${PROJECT_SOURCES}
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE 
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PROJECT_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    LINN_PROPERTY_ENABLE_SHORT_MACROS
+    LINN_SINGLETON_ENABLE_SHORT_MACROS
+)
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE ON
+    WIN32_EXECUTABLE OFF          # ON = 关闭控制台窗口（Windows GUI应用）
+    LINK_WHAT_YOU_USE ON
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    VS_DEBUGGER_COMMAND "$<TARGET_FILE:${PROJECT_NAME}>"
+    COMPILE_PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/pdb
+    PDB_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/pdb
+    COMPILE_PDB_NAME "module"
+    PDB_NAME "module"
+)
+target_link_libraries(${PROJECT_NAME} PRIVATE simple_module)

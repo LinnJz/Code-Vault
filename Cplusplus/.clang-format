@@ -1,16 +1,138 @@
-﻿Language: Cpp
+﻿# https://tqfx.org/clang-format/BasedOnStyle/?h=basedonstyle
+# https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+---
+Language: Cpp
 Standard: Latest
-DisableFormat: false
 BasedOnStyle: Google
-ColumnLimit: 82
-AttributeMacros: [__capability, __output, __unused]
-#ForEachMacros: [RANGES_FOR, FOREACH]
+DisableFormat: false
+TabWidth: 2
 IndentWidth: 2
+ColumnLimit: 120
 AccessModifierOffset: -2
-MaxEmptyLinesToKeep: 1
-#LineEndingStyle: CRLF
-#Encoding: UTF-8
+MaxEmptyLinesToKeep: 2
+BinPackArguments: true
+BinPackParameters: OnePerLine
+ 
+AlignAfterOpenBracket: Align
+AlignArrayOfStructures: Left
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveBitFields: AcrossEmptyLinesAndComments
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: AcrossComments
+AlignConsecutiveShortCaseStatements:
+  Enabled: true
+  AcrossEmptyLines: true
+  AcrossComments: true
+  AlignCaseColons: true
 
+AlignEscapedNewlines: Right
+AlignOperands: AlignAfterOperator
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: false
+# AllowAllParametersOfDeclarationOnNextLine: true # 会覆盖 BinPackParameters
+
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseExpressionOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortCompoundRequirementOnASingleLine: true
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: None # Inline All
+AllowShortLoopsOnASingleLine: false
+
+AlwaysBreakAfterReturnType: TopLevelDefinitions # 为 None PenaltyReturnTypeOnItsOwnLine 才被考虑在内
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: Yes
+
+AttributeMacros:
+  - __capability
+  - __output
+  - __unused
+BitFieldColonSpacing: Both
+
+BraceWrapping:
+  AfterCaseLabel: true
+  AfterClass: true
+  AfterControlStatement: true
+  AfterEnum: true
+  AfterExternBlock: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterObjCDeclaration: false
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeLambdaBody: true
+  BeforeWhile: true
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyNamespace: true
+  SplitEmptyRecord: true
+
+BreakAfterAttributes: Leave
+BreakBeforeBinaryOperators: None
+BreakBeforeBraces: Custom # 为Custom BraceWrapping 才被考虑在内
+BreakBeforeConceptDeclarations: Always
+BreakBeforeInlineASMColon: OnlyMultiline
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeComma
+BreakConstructorInitializersBeforeComma: false
+BreakFunctionDefinitionParameters: false
+BreakInheritanceList: BeforeComma
+BreakStringLiterals: false
+BreakTemplateDeclarations: Yes
+
+CompactNamespaces: true
+Cpp11BracedListStyle: false
+DeriveLineEnding: true
+# DerivePointerAlignment: true # 如果为 true PointerAlignment 仅用作后备。
+
+EmptyLineBeforeAccessModifier: Always
+FixNamespaceComments: true
+
+ForEachMacros: ['RANGES_FOR', 'FOREACH']
+IfMacros: ['IF']
+IncludeBlocks: Preserve
+IncludeCategories:
+  - Regex: ^<.*
+    Priority: 1
+  - Regex: ^".*
+    Priority: 2
+  - Regex: .*
+    Priority: 3
+IncludeIsMainRegex: ([-_](test|unittest))?$'([-_](test|unittest))?$'
+
+IndentAccessModifiers: false
+IndentCaseBlocks: false
+IndentCaseLabels: false
+IndentExternBlock: AfterExternBlock # 向后兼容 BraceWrapping.AfterExternBlock: true 的缩进。
+IndentGotoLabels: false
+IndentPPDirectives: AfterHash
+IndentRequiresClause: false
+IndentWrappedFunctionNames: false
+
+InsertNewlineAtEOF: true
+IntegerLiteralSeparator:
+  Binary: 3
+  BinaryMinDigits: 4
+  Decimal: 0
+  DecimalMinDigits: 0
+  Hex: 2
+  HexMinDigits: 2
+KeepEmptyLines:
+  AtEndOfFile: true
+LambdaBodyIndentation: OuterScope
+
+MacroBlockBegin: "^NS_MAP_BEGIN|\
+NS_TABLE_HEAD$"
+MacroBlockEnd: "^\
+NS_MAP_END|\
+NS_TABLE_.*_END$"
+
+NamespaceIndentation: None
+PackConstructorInitializers: Never
 PenaltyBreakAssignment: 2
 PenaltyBreakBeforeFirstCallParameter: 19
 PenaltyBreakComment: 300
@@ -18,103 +140,19 @@ PenaltyBreakFirstLessLess: 120
 PenaltyBreakString: 1000
 PenaltyBreakTemplateDeclaration: 10
 PenaltyExcessCharacter: 1000000
-PenaltyReturnTypeOnItsOwnLine: 60
 PenaltyIndentedWhitespace: 0
+PenaltyReturnTypeOnItsOwnLine: 60
 
-AlignAfterOpenBracket: Align
-AlignArrayOfStructures: Right
-
-AlignConsecutiveAssignments: true
-AlignConsecutiveDeclarations: true
-AlignConsecutiveBitFields: true
-AlignConsecutiveMacros: true
-AlignConsecutiveShortCaseStatements:
-  Enabled: true
-  AcrossEmptyLines: true
-  AcrossComments: true
-  AlignCaseColons: true
-AlignEscapedNewlines: LeftWithLastLine
-
-AlignEscapedNewlinesLeft: true
-AlignOperands: false
-AlignTrailingComments: true
-AllowAllParametersOfDeclarationOnNextLine: true
-
-AllowShortBlocksOnASingleLine: true
-AllowShortCaseLabelsOnASingleLine: true
-AllowShortCaseExpressionOnASingleLine: true
-AllowShortCompoundRequirementOnASingleLine: true
-AllowShortEnumsOnASingleLine: true
-AllowShortLoopsOnASingleLine: false
-AllowShortIfStatementsOnASingleLine: AllIfsAndElse
-AllowShortLambdasOnASingleLine: All
-AllowShortFunctionsOnASingleLine: All
-
-AlwaysBreakAfterReturnType: None
-AlwaysBreakBeforeMultilineStrings: false
-BreakTemplateDeclarations: Yes
-BreakAfterAttributes: Leave
-BreakBeforeConceptDeclarations: Always
-BreakBeforeInlineASMColon: OnlyMultiline
-BreakBeforeTernaryOperators: true
-BreakConstructorInitializers: BeforeComma
-BreakFunctionDefinitionParameters: false
-BreakInheritanceList: BeforeComma
-BreakStringLiterals: false
-BreakBeforeBraces: Mozilla # 设置Custom BraceWrapping生效
-BinPackArguments: true
-BinPackParameters: true
-BitFieldColonSpacing: Both
-
-BraceWrapping:
-  AfterCaseLabel: false
-  AfterClass: true
-  AfterControlStatement: MultiLine
-  AfterEnum: true
-  AfterFunction: true
-  AfterNamespace: true
-  AfterStruct: true
-  AfterUnion: true
-  AfterExternBlock: true
-  BeforeCatch: true
-  BeforeElse: true
-  BeforeLambdaBody: true
-  BeforeWhile: false
-
-CompactNamespaces: true
-Cpp11BracedListStyle: false
-EmptyLineBeforeAccessModifier: Always
-EmptyLineAfterAccessModifier: Always
-FixNamespaceComments: true
-
-IndentAccessModifiers: false
-IndentCaseBlocks: false
-IndentCaseLabels: false
-IndentGotoLabels: false
-IndentPPDirectives: AfterHash
-IndentRequiresClause: false
-IndentWrappedFunctionNames: false
-
-IntegerLiteralSeparator:
-  Binary: 3
-  BinaryMinDigits: 4
-  Hex: 2
-  HexMinDigits: 2
-
-KeepEmptyLines: 
-  AtEndOfFile: true
-
-LambdaBodyIndentation: OuterScope
-#NamespaceIndentationKind: All
-ReferenceAlignment: Left
+PointerAlignment: Right
+ReferenceAlignment: Right
+ReflowComments: false
 RemoveEmptyLinesInUnwrappedLines: true
 RequiresClausePosition: OwnLine
 RequiresExpressionIndentation: OuterScope
 SeparateDefinitionBlocks: Always
 SortUsingDeclarations: Lexicographic
-ReflowComments: true
 
-SpaceAfterCStyleCast: false
+SpaceAfterCStyleCast: true
 SpaceAfterLogicalNot: false
 SpaceAfterTemplateKeyword: false
 SpaceBeforeAssignmentOperators: true
@@ -126,12 +164,23 @@ SpaceBeforeJsonColon: false
 SpaceBeforeParens: Custom
 SpaceBeforeParensOptions:
   AfterControlStatements: true
+  AfterForeachMacros: true
+  AfterFunctionDeclarationName: false
+  AfterFunctionDefinitionName: false
+  AfterIfMacros: true
   AfterOverloadedOperator: true
   AfterPlacementOperator: true
   AfterRequiresInClause: true
   AfterRequiresInExpression: true
+  BeforeNonEmptyParentheses: false
 SpaceBeforeRangeBasedForLoopColon: true
-SpaceBeforeSquareBrackets: true
 SpaceInEmptyBlock: true
-#SpacesInAngle: Never
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: false
+SpacesInConditionalStatement: false
 SpacesInContainerLiterals: true
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+...

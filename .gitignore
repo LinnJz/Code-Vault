@@ -9,6 +9,7 @@
 **/ThirdParty
 **/.venv
 **/out
+**/cpp_new_features-main
 
 # redis rdb
 *.rdb

@@ -1,16 +1,37 @@
-﻿file(GLOB_RECURSE LEETCODE_SOURCES CONFIGURE_DEPENDS "*.cpp")
+﻿cmake_minimum_required(VERSION 3.28)
 
-if(LEETCODE_SOURCES)
-    add_executable(leetcode_exe ${LEETCODE_SOURCES})
-    
-    set_target_properties(leetcode_exe PROPERTIES
-        WIN32_EXECUTABLE OFF
-        LINK_WHAT_YOU_USE ON
-    )
-    if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-        setup_target_path(leetcode_exe)
-    endif()
-    target_include_directories(leetcode_exe PRIVATE 
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    )
-endif()
+project(leetcode
+    VERSION 1.0.0
+    DESCRIPTION ""
+    HOMEPAGE_URL ""
+    LANGUAGES CXX
+)
+
+FILE(GLOB Src_LeetCode CONFIGURE_DEPENDS *.h *.cpp *.hpp)
+source_group(Src_LeetCode FILES ${Src_LeetCode})
+
+set(PROJECT_SOURCES
+    ${Src_LeetCode}
+)
+add_executable(
+    ${PROJECT_NAME}
+    ${PROJECT_SOURCES}
+)
+
+target_include_directories(${PROJECT_NAME} PRIVATE 
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PROJECT_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
+    LINN_PROPERTY_ENABLE_SHORT_MACROS
+    LINN_SINGLETON_ENABLE_SHORT_MACROS
+)
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE ON
+    WIN32_EXECUTABLE OFF          # ON = 关闭控制台窗口（Windows GUI应用）
+    LINK_WHAT_YOU_USE ON
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    VS_DEBUGGER_COMMAND "$<TARGET_FILE:${PROJECT_NAME}>"
+)
