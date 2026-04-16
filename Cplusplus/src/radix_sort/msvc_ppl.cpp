@@ -86,21 +86,21 @@ void run_tests(const std::string&              type_name,
   }
 }
 
-//int main()
-//{
-//  using namespace std::literals;
-//  std::ios_base::sync_with_stdio(false);
-//  std::cout.setf(std::ios_base::boolalpha);
-//
-//  // 定义测试规模（可根据需要调整）
-//  std::vector<std::size_t> sizes = { 1'000'000, 10'000'000, 50'000'000,
-//                                     100'000'000 };
-//
-//  // 测试四种整数类型
-//  run_tests<uint32_t>("uint32", sizes);
-//  run_tests<int32_t>("int32", sizes);
-//  run_tests<uint64_t>("uint64", sizes);
-//  run_tests<int64_t>("int64", sizes);
-//
-//  return 0;
-//}
+int main()
+{
+  using namespace std::literals;
+  std::ios_base::sync_with_stdio(false);
+  std::cout.setf(std::ios_base::boolalpha);
+
+  // 定义测试规模（可根据需要调整）
+  std::vector<std::size_t> sizes = { 1'000'000, 10'000'000, 50'000'000,
+                                     100'000'000 };
+
+  // 测试四种整数类型
+  run_tests<uint32_t>("uint32", sizes);
+  run_tests<int32_t>("int32", sizes);
+  run_tests<uint64_t>("uint64", sizes);
+  run_tests<int64_t>("int64", sizes);
+
+  return 0;
+}

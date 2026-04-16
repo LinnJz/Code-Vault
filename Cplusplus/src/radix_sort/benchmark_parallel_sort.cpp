@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -595,7 +595,7 @@ void test_performance(const std::string& version_name, InsertSortFunc insert_sor
 
     std::cout << version_name << " - " << data_type << ": " << duration.count() << " μs" << std::endl;
 }
-/*
+
 int main()
 {
     const int N = 16384; // 2^14
@@ -665,4 +665,3 @@ int main()
 
     return 0;
 }
-*/

@@ -5,6 +5,54 @@
 #include <type_traits>
 
 namespace stdex {
+
+  
+template<size_t Begin, size_t End, size_t Factor, typename Func>
+void unroll_for(Func&& func)
+{
+  static_assert(Factor > 0 && (Factor & (Factor - 1)) == 0,
+                "N must be a power of two");
+  static_assert(End >= Begin, "End must >= Begin");
+
+  constexpr size_t total      = End - Begin;
+  constexpr size_t main_iters = total / Factor;
+  constexpr size_t remainder  = total % Factor;
+
+  auto step = [&](size_t base) {
+    [&]<size_t... Is>(std::index_sequence<Is...>) {
+      (func(base + Is), ...);
+    }(std::make_index_sequence<Factor>());
+  };
+
+  for (size_t i = 0; i < main_iters; ++i) {
+    step(Begin + i * Factor);
+  }
+  for (size_t i = 0; i < remainder; ++i) {
+    func(Begin + main_iters * Factor + i);
+  }
+}
+
+template<size_t Factor, typename Func>
+void unroll_for(size_t begin, size_t end, Func&& func)
+{
+  static_assert(Factor > 0 && (Factor & (Factor - 1)) == 0,
+                "N must be a power of two");
+  const auto [main_iters, remainder] = ::lldiv(end - begin, Factor);
+
+  auto step = [&](size_t base) {
+    [&]<size_t... Is>(std::index_sequence<Is...>) {
+      (func(base + Is), ...);
+    }(std::make_index_sequence<Factor>());
+  };
+
+  for (size_t i = 0; i < (size_t)main_iters; ++i) {
+    step(begin + i * Factor);
+  }
+  for (size_t i = 0; i < (size_t)remainder; ++i) {
+    func(begin + (size_t)main_iters * Factor + i);
+  }
+}
+
 template<typename T, std::size_t N, std::size_t... Is>
 constexpr auto make_array_impl(T&& value, std::index_sequence<Is...>)
 {
