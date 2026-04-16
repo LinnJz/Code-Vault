@@ -268,6 +268,7 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/GF>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/GS>"    # Buffer security check
             "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Qpar>"  # Auto-parallelization
+            "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Qpar-report:2>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/Gy>"    # Function-level linking
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/Oi>"    # Intrinsic functions
         )
@@ -312,6 +313,7 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/GF>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/GS>" 
             "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Qpar>"
+            "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Qpar-report:2>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/Gy>" 
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/Oi>" 
         )

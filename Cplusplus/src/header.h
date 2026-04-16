@@ -146,3 +146,13 @@
 // C++26
 // #include <inplace_vector>
 // #include <hive>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <immintrin.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
