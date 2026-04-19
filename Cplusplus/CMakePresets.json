@@ -11,20 +11,24 @@
       "hidden": true,
       "displayName": "Base Configuration",
       "description": "Base preset for Clang-Cl (MSVC-compatible) x64 builds using Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
       "generator": "Ninja",
       "architecture": {
         "value": "x64",
         "strategy": "external"
       },
       "toolset": {
-        "value": "ClangCL",
+        "value": "v143",
         "strategy": "external"
       },
-      "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "installDir": "${sourceDir}/out/install/${presetName}",
+      "environment": {
+        "CC": "cl",
+        "CXX": "cl"
+      },
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "clang-cl.exe",
-        "CMAKE_CXX_COMPILER": "clang-cl.exe",
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
         "CMAKE_CONFIGURATION_TYPES": "Debug;RelWithDebInfo;Release",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
       },
@@ -35,8 +39,14 @@
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
-          "intelliSenseMode": "windows-clang-x64",
-          "someCustomFlag": true
+          "hostOS": [ "Windows" ],
+          "intelliSenseMode": "windows-msvc-x64",
+          "intelliSenseOptions": { "useCompilerDefaults": true },
+          "enableMicrosoftCodeAnalysis": true,
+          "enableClangTidyCodeAnalysis": true
+        },
+        "microsoft.com/VisualStudioRemoteSettings/CMake/1.0": {
+          "sourceDir": "$env{HOME}/.vs/$ms{projectDirName}"
         }
       }
     },

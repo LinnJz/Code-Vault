@@ -19,7 +19,7 @@ if(COMPILER_MSVC_LIKE)
     # https://learn.microsoft.com/zh-cn/cpp/build/cmake-presets-vs?view=msvc-170
     # General Compilation Options
     set(MSVC_COMPILE_GENERAL_OPTIONS
-        /std:c++latest        # Greater and equal c++20, will auto enable module support
+        # /std:c++latest        # Greater and equal c++20, will auto enable module support
         # /ifcOutput ${CMAKE_BINARY_DIR}/  # Generate interface definition file
         /utf-8                # character set
         # C strict standard consistency, disable lenient behavior, 
@@ -53,7 +53,8 @@ if(COMPILER_MSVC_LIKE)
         
         # Important! /openmp:llvm and /Qpar cannot be enabled at the same time
         # Because they will compete for control of the loop, leading to compilation confusion and potential runtime conflicts
-        /openmp:experimental  # /openmp 2.0, /openmp:experimental 2.0 simd, /openmp:llvm 3.0 simd
+        /openmp:experimental
+        /openmp:llvm  # /openmp 2.0, /openmp:experimental 2.0 simd, /openmp:llvm 3.0 simd
         /sdl                  # SDL checks
         /EHsc                 # C Exception Handling
         /errorReport:prompt   # Error Reporting Mode
@@ -92,7 +93,7 @@ else()
 
     # GCC/Clang General Compilation Options (equivalent to MSVC)
     set(GCC_CLANG_COMPILE_GENERAL_OPTIONS
-        -std=c++${CMAKE_CXX_STANDARD}
+        # -std=c++${CMAKE_CXX_STANDARD}
         # Character set (equivalent to /utf-8)
         -finput-charset=UTF-8
         -fexec-charset=UTF-8
@@ -233,9 +234,9 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
             "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/GL>"    # Whole program optimization
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/GF>"    # Enable string pool
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/GS>"    # Buffer security check
-            "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Qpar>"  # Auto-parallelization
+            #"$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Qpar>"  # Auto-parallelization
             #https://learn.microsoft.com/zh-cn/cpp/build/reference/qpar-report-auto-parallelizer-reporting-level?view=msvc-170
-            "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Qpar-report:2>"
+            #"$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/Qpar-report:2>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/Gy>"    # Function-level linking
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:Release>>:/Oi>"    # Intrinsic functions
         )
@@ -305,8 +306,8 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
             "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/GL>" 
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/GF>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/GS>" 
-            "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Qpar>"
-            "$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Qpar-report:2>"
+            #"$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Qpar>"
+            #"$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:RelWithDebInfo>>:/Qpar-report:2>"
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/Gy>" 
             "$<$<AND:$<CXX_COMPILER_ID:MSVC,Clang>,$<CONFIG:RelWithDebInfo>>:/Oi>" 
         )

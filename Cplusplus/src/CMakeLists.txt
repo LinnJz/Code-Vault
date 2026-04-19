@@ -21,6 +21,7 @@ add_executable(
 include(Dependencies.cmake)
 target_include_directories(${PROJECT_NAME} PRIVATE 
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/../stdex>
 )
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     PROJECT_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}"
