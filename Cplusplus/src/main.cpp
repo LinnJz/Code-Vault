@@ -1,4 +1,10 @@
-﻿#include <omp.h>
+﻿/*
+c++ ver >= 20
+clang ver >= 13.0.0
+gcc ver >= 11.1.0
+msvc ver >= 19.28 (VS 16.8)
+*/
+#include <omp.h>
 
 #include <algorithm>
 #include <bit>
@@ -34,9 +40,9 @@
 #  define RESTRICT_KEYWORD
 #endif
 
-namespace stdexx
+namespace stdex
 {
-enum class radix_order
+enum class radix_sort_order
 {
   asc,
   desc
@@ -47,9 +53,9 @@ enum class radix_nan_position
   //< Temp Data: {INFINITY, -INFINITY, NAN, -0.0f, 1.0f / 1.0f, 0.0f, -1.0f / 1.0f,
   //         std::sqrt(-1.0f), 3.14f}
 
-  unhandled, // maybe output: -nan(ind) -inf -1 -0 0 1 3.14 inf nan
-  begin,     // maybe output: -nan(ind) nan -inf -1 -0 0 1 3.14 inf
-  end        // maybe output: -inf -1 -0 0 1 3.14 inf -nan(ind) nan
+  unhandled, //< maybe output: -nan(ind) -inf -1 -0 0 1 3.14 inf nan
+  begin,     //< maybe output: -nan(ind) nan -inf -1 -0 0 1 3.14 inf
+  end        //< maybe output: -inf -1 -0 0 1 3.14 inf nan -nan(ind)
 };
 
 template<typename Ty_>
@@ -63,8 +69,8 @@ struct radix_options
   uint8_t            unroll_n    = 8U;
   uint16_t           bucket_size = 256U;
   uint32_t           chunk_size  = 256U * 256U;
-  radix_order        sort_order  = radix_order::asc;
-  radix_nan_position nan_pos     = radix_nan_position::begin;
+  radix_sort_order   sort_order  = radix_sort_order::asc;
+  radix_nan_position nan_pos     = radix_nan_position::unhandled;
 };
 
 template<typename Exec_policy_>
@@ -84,7 +90,7 @@ concept Standard_allocator_ = requires (Alloc_ A_, typename Alloc_::value_type *
 
   { A_.allocate(N_) } -> std::same_as<typename Alloc_::value_type *>;
 
-  { A_.deallocate(P_, N_) } noexcept -> std::same_as<void>;
+  { A_.deallocate(P_, N_) } -> std::same_as<void>;
 
   { A_ == A_ } -> std::convertible_to<bool>;
   { A_ != A_ } -> std::convertible_to<bool>;
@@ -105,8 +111,8 @@ struct Max_partition_result_
 //< Only applies to floating-point numbers,
 //< while dividing according to NaN, find the maximum based on the projection.
 //
-//< Proj_func_.F_() return floating-point
-//< Proj_func_()    return projection, type is size_t
+//< Proj_func_.Get_key_value_() return floating-point
+//< Proj_func_()                return projection, type is size_t
 template<Random_access_iterator_ Random_iter_, typename Predicate_, typename Proj_functor_>
 inline Max_partition_result_
 Max_while_partition_(Random_iter_         Begin_,
@@ -132,7 +138,7 @@ Max_while_partition_(Random_iter_         Begin_,
         break;
       }
 
-      if (!std::isnan(Proj_func_.F_(*First_)))
+      if (!std::isnan(Proj_func_.Get_key_value_(*First_)))
       {
         if (auto const Curr_val_ = Proj_func_(*First_); Curr_val_ > Max_val_)
         {
@@ -149,7 +155,7 @@ Max_while_partition_(Random_iter_         Begin_,
 
       if (First_ == Last_)
       {
-        if (!std::isnan(Proj_func_.F_(*First_)))
+        if (!std::isnan(Proj_func_.Get_key_value_(*First_)))
         {
           if (auto const Curr_val_ = Proj_func_(*First_); Curr_val_ > Max_val_)
           {
@@ -161,7 +167,7 @@ Max_while_partition_(Random_iter_         Begin_,
     }
     while (!Pred_(*Last_));
 
-    if (!std::isnan(Proj_func_.F_(*First_)))
+    if (!std::isnan(Proj_func_.Get_key_value_(*First_)))
     {
       if (auto const Curr_val_ = Proj_func_(*First_); Curr_val_ > Max_val_)
       {
@@ -179,7 +185,7 @@ template<bool Is_parallel_, uint32_t Loop_N_, typename Random_point_, typename P
 inline size_t
 Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_) noexcept
 {
-  size_t Max_val_ { 0 };
+  size_t Max_val_ = 0;
 
   if constexpr (Is_parallel_)
   {
@@ -191,7 +197,7 @@ Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_
 
       // openmp 2.0 does not support "reduction(max : ?)" and loop index must be signed
 #  pragma omp for nowait
-      for (int64_t Index_ { 0 }; Index_ < Size_; ++Index_)
+      for (int64_t Index_ = 0; Index_ < Size_; ++Index_)
       {
         if (auto const Current_val_ = Proj_func_(Begin_[Index_]); Current_val_ > Local_val_)
         {
@@ -209,7 +215,7 @@ Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_
     }
 #else /* GNU, Clang, MSVC(/openmp:llvm) */
 #  pragma omp parallel for reduction(max : Max_val_) num_threads(Actual_threads_)
-    for (size_t Index_ { 0 }; Index_ < Size_; ++Index_)
+    for (size_t Index_ = 0; Index_ < Size_; ++Index_)
     {
       if (auto const Current_val_ = Proj_func_(Begin_[Index_]); Current_val_ > Max_val_)
       {
@@ -231,7 +237,7 @@ Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_
     });
 #else
 #  pragma omp simd reduction(max : Max_val_)
-    for (size_t Index_ { 0 }; Index_ < Size_; ++Index_)
+    for (size_t Index_ = 0; Index_ < Size_; ++Index_)
     {
       if (auto const Val_ = Proj_func_(Begin_[Index_]); Val_ > Max_val_)
       {
@@ -244,70 +250,7 @@ Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_
   return Max_val_;
 }
 
-enum class Unroll_loop_direction_
-{
-  Increasing_,
-  Decreasing_
-};
-
-template<Unroll_loop_direction_ Loop_direct_, size_t Unroll_size_, typename Function_>
-ALWAYS_INLINE void
-Unrolled_call_(size_t Base_, Function_ const &Func_) noexcept
-{
-  [&]<size_t... Is_>(std::index_sequence<Is_...>)
-  {
-    if constexpr (Loop_direct_ == Unroll_loop_direction_::Increasing_)
-    {
-      (Func_(Base_ + Is_), ...);
-    }
-    else
-    {
-      (Func_(Base_ - Is_), ...);
-    }
-  }.template operator() (std::make_index_sequence<Unroll_size_> {});
-}
-
-template<Unroll_loop_direction_ Loop_direct_, size_t Unroll_size_, typename Function_>
-ALWAYS_INLINE void
-Unroll_loop_(size_t Start_, size_t End_, Function_ const &Func_) noexcept
-{
-  static_assert((Unroll_size_ & (Unroll_size_ - 1)) == 0, "Unroll size must be a power of two");
-
-  auto const [Main_iters_, Remainder_] = ::lldiv(End_ - Start_, Unroll_size_);
-
-  for (size_t Index_ { 0 }; Index_ < (size_t) Main_iters_; ++Index_)
-  {
-    Unrolled_call_<Unroll_size_>(Start_ + Index_ * Unroll_size_, Func_);
-  }
-
-  for (size_t Index_ { 0 }; Index_ < (size_t) Remainder_; ++Index_)
-  {
-    Func_(Start_ + Index_ + ((size_t) Main_iters_ * Unroll_size_));
-  }
-}
-
-template<size_t Start_, size_t End_, size_t Unroll_size_, typename Function_>
-ALWAYS_INLINE void
-Unroll_loop_(Function_ const &Func_) noexcept
-{
-  static_assert((Unroll_size_ & (Unroll_size_ - 1)) == 0, "Unroll size must be a power of two");
-
-  constexpr size_t Size_       = End_ - Start_;
-  constexpr size_t Main_iters_ = Size_ / Unroll_size_;
-  constexpr size_t Remainder_  = Size_ % Unroll_size_;
-
-  for (size_t Index_ { 0 }; Index_ < Main_iters_; ++Index_)
-  {
-    Unrolled_call_<Unroll_size_>(Start_ + Index_ * Unroll_size_, Func_);
-  }
-
-  for (size_t Index_ { 0 }; Index_ < Remainder_; ++Index_)
-  {
-    Func_(Start_ + Index_ + (Main_iters_ * Unroll_size_));
-  }
-}
-
-// Allocate and construct a buffer
+//< Allocate and construct a buffer
 template<typename Allocator_>
 ALWAYS_INLINE typename ::std::allocator_traits<Allocator_>::pointer
 Construct_buffer_(size_t N_, Allocator_ &Alloc_)
@@ -318,13 +261,13 @@ Construct_buffer_(size_t N_, Allocator_ &Alloc_)
 
   Pointer_ const P_ = Alloc_.allocate(N_);
 
-  // If the objects being sorted have trivial default initialization, they do not need to be
-  // initialized here. This can benefit performance.
+  //< If the objects being sorted have trivial default initialization, they do not need to be
+  //< initialized here. This can benefit performance.
   if (!::std::is_trivially_default_constructible_v<Value_type_>)
   {
     for (size_t I_ = 0; I_ < N_; ++I_)
     {
-      // Objects being sorted must be default-initializable
+      //< Objects being sorted must be default-initializable
       Traits_::construct(Alloc_, P_ + I_);
     }
   }
@@ -332,15 +275,15 @@ Construct_buffer_(size_t N_, Allocator_ &Alloc_)
   return P_;
 }
 
-// Destroy and deallocate a buffer
+//< Destroy and deallocate a buffer
 template<typename Allocator_>
 ALWAYS_INLINE void
 Destroy_buffer_(typename ::std::allocator_traits<Allocator_>::pointer P_, size_t N_, Allocator_ &Alloc_)
 {
   using Traits_ = ::std::allocator_traits<Allocator_>;
 
-  // If the objects being sorted have trivial destruction, they do not need to be
-  // destroyed here. This can benefit performance.
+  //< If the objects being sorted have trivial destruction, they do not need to be
+  //< destroyed here. This can benefit performance.
   if (!::std::is_trivially_destructible_v<typename Allocator_::value_type>)
   {
     for (size_t I_ = 0; I_ < N_; ++I_)
@@ -373,6 +316,68 @@ private:
   typename std::allocator_traits<Allocator_>::pointer M_buffer_;
 };
 
+enum class Unroll_loop_direction_
+{
+  Increasing_,
+  Decreasing_
+};
+
+template<size_t Unroll_size_, typename Function_>
+ALWAYS_INLINE void
+Unrolled_call_(size_t Base_, Function_ const &Func_) noexcept
+{
+  [&]<size_t... Is_>(std::index_sequence<Is_...>)
+  {
+    (Func_(Base_ + Is_), ...);
+  }.template operator() (std::make_index_sequence<Unroll_size_> {});
+}
+
+template<size_t Unroll_size_, typename Function_>
+ALWAYS_INLINE void
+Unroll_loop_(size_t Start_, size_t End_, Function_ const &Func_) noexcept
+{
+  static_assert((Unroll_size_ & (Unroll_size_ - 1)) == 0, "Unroll size must be a power of two");
+
+  size_t Index_ { Start_ };
+
+  for (; Unroll_size_ <= End_ - Index_; Index_ += Unroll_size_)
+  {
+    // Unrolled_call_<Unroll_size_>(Index_, Func_);
+    for (size_t Roll_ = 0; Roll_ < Unroll_size_; ++Roll_)
+    {
+      Func_(Index_ + Roll_);
+    }
+  }
+
+  for (; Index_ < End_; ++Index_)
+  {
+    Func_(Index_);
+  }
+}
+
+struct Radix_projection_functor_tag_
+{
+};
+
+template<typename Ty_>
+concept Radix_projection_tag_ = std::is_void_v<Ty_> || std::derived_from<Ty_, Radix_projection_functor_tag_>;
+
+struct Radix_projection_functor_default_tag_ : Radix_projection_functor_tag_
+{
+};
+
+struct Radix_projection_functor_signed_integral_xor_tag_ : Radix_projection_functor_tag_
+{
+};
+
+struct Radix_projection_functor_float_point_bitwise_not_tag_ : Radix_projection_functor_tag_
+{
+};
+
+inline constexpr Radix_projection_functor_default_tag_                 Radix_default_tag_ {};
+inline constexpr Radix_projection_functor_signed_integral_xor_tag_     Radix_int_xor_tag_ {};
+inline constexpr Radix_projection_functor_float_point_bitwise_not_tag_ Radix_float_bitwise_not_tag_ {};
+
 template<typename Key_function_, typename Ty_>
 struct Radix_projection_functor_
 {
@@ -381,105 +386,340 @@ struct Radix_projection_functor_
       "Key_function_ must be callable with exactly one required argument of type Ty_, const Ty_, or const Ty_&. "
       "Additional arguments must have default values.");
 
-  using Key_ty_ = std::remove_cvref_t<std::invoke_result_t<Key_function_, Ty_>>;
+  using Key_ty_      = std::remove_cvref_t<std::invoke_result_t<Key_function_, Ty_>>;
+  using Unsigned_ty_ = std::make_unsigned_t<
+      std::conditional_t<std::is_floating_point_v<Key_ty_>,
+                         std::conditional_t<std::same_as<Key_ty_, float>, std::uint32_t, std::uint64_t>,
+                         Key_ty_>>;
+  static constexpr std::uint8_t Shift_of_sign_bit_ = sizeof(Key_ty_) * 8 - 1;
+  static constexpr Unsigned_ty_ All_bit_mask_      = ~Unsigned_ty_ { 0 };
+  static constexpr Unsigned_ty_ Sign_bit_mask_     = All_bit_mask_ << Shift_of_sign_bit_;
 
   static_assert(std::is_arithmetic_v<Key_ty_>, "Type must be arithmetic (integral or floating-point)!");
-  // does not support types like __int128, which are larger than size_t
+  //< Does not support types like __int128, which are larger than size_t
   static_assert((sizeof(Key_ty_) <= sizeof(size_t)), "Type size is bigger than size_t size.");
 
   Key_function_ F_;
 
+  constexpr Key_ty_ Get_key_value_(Ty_ const &Val_) const noexcept { return F_(Val_); }
+
   constexpr size_t operator() (Ty_ const &Val_) const noexcept
   {
-    if constexpr (std::unsigned_integral<Ty_>)
+    return this->operator() (Radix_default_tag_, Get_key_value_(Val_));
+  }
+
+  constexpr size_t operator() (Radix_projection_functor_default_tag_, Key_ty_ Val_) const noexcept
+  {
+    if constexpr (std::unsigned_integral<Key_ty_>)
     {
-      return F_(Val_);
+      return Val_;
     }
-    else if constexpr (std::signed_integral<Ty_>)
+    else if constexpr (std::signed_integral<Key_ty_>)
     {
-      // The default function needs to take the signed integer-like representation and map it to an unsigned one. The
-      // following code will take the midpoint of the unsigned representable range (SIZE_MAX/2)+1 and does an unsigned
-      // add of the value. Thus, it maps a [-signed_min,+signed_max] range into a [0, unsigned_max] range.
-      return ((std::numeric_limits<size_t>::max() / 2) + 1) + static_cast<size_t>(F_(Val_));
+      //< The default function needs to take the signed integer-like representation and map it to an unsigned one. The
+      //< following code will take the midpoint of the unsigned representable range (SIZE_MAX/2)+1 and does an unsigned
+      //< add of the value. Thus, it maps a [-signed_min,+signed_max] range into a [0, unsigned_max] range.
+      return ((std::numeric_limits<size_t>::max() / 2) + 1) + static_cast<size_t>(Val_);
 
-      // Another strategy "return std::bit_cast<std::make_unsigned_t<Ty_>>(F_(Val_)) ^ Sign_bit_mask_;",
-      // this requires that the type Ty_ and the return value must be exactly the same,
-      // so use "return static_cast<size_t>(F_(Val_)) ^ Sign_bit_mask_;",
-      //
-      // if only LSD sorting is used, only the highest significant bit needs to be processed.
-      // Currently, a mixed strategy of MSD and LSD is adopted, using the above scheme applied to the function-Radix_key.
+      //< Another strategy "return static_cast<Unsigned_ty_>(Val_) ^ Sign_bit_mask_;"
+      //<
+      //< if only LSD sorting is used, only the highest significant bit needs to be processed.
+      //< Currently, a mixed strategy of MSD and LSD is adopted, using the above scheme applied to the function-Radix_key.
     }
-    else /* std::floating_point<Ty_> */
+    else /* std::floating_point<Key_ty_> */
     {
-      using Unsigned_ty_ = std::conditional_t<std::same_as<Ty_, float>, std::uint32_t, std::uint64_t>;
-      constexpr std::uint8_t Shift_of_sign_bit_ = sizeof(Ty_) * 8 - 1;
-      constexpr Unsigned_ty_ Sign_bit_mask_     = static_cast<Unsigned_ty_>(1) << Shift_of_sign_bit_;
+      Unsigned_ty_ const Unsigned_val_ = std::bit_cast<Unsigned_ty_>(Val_);
 
-      Unsigned_ty_ const Unsigned_val_ = std::bit_cast<Unsigned_ty_>(F_(Val_));
+      //< NaN cannot be compared, so we do not use >=, but instead use shifting
+      //< return ((Unsigned_val_ >> Shift_of_sign_bit_) == 0) ? Unsigned_val_ | Sign_bit_mask_ : ~Unsigned_val_;
 
-      // NaN cannot be compared, so we do not use >=, but instead use shifting
-      return ((Unsigned_val_ >> Shift_of_sign_bit_) == 0) ? Unsigned_val_ | Sign_bit_mask_ : ~Unsigned_val_;
+      Unsigned_ty_ const Mask_ = (Unsigned_ty_(0) - (Unsigned_val_ >> Shift_of_sign_bit_));
+
+      return (Unsigned_val_ ^ Mask_) | (Sign_bit_mask_ & ~Mask_);
+    }
+  }
+
+  constexpr size_t operator() (Radix_projection_functor_signed_integral_xor_tag_, Key_ty_ Val_) const noexcept
+  {
+    if constexpr (std::signed_integral<Key_ty_>)
+    {
+      return static_cast<Unsigned_ty_>(Val_) ^ Sign_bit_mask_;
+    }
+    else
+    {
+      return this->operator() (Radix_default_tag_, Val_);
+    }
+  }
+
+  constexpr size_t operator() (Radix_projection_functor_float_point_bitwise_not_tag_, Key_ty_ Val_) const noexcept
+  {
+    if constexpr (std::floating_point<Key_ty_>)
+    {
+      Unsigned_ty_ const Unsigned_val_ = std::bit_cast<Unsigned_ty_>(Val_);
+
+      return Unsigned_val_ ^ (Unsigned_ty_(0) - (Unsigned_val_ >> Shift_of_sign_bit_));
+    }
+    else
+    {
+      return this->operator() (Radix_default_tag_, Val_);
     }
   }
 };
+
+template<radix_options Radix_opts_, typename Unsigned_ty_>
+ALWAYS_INLINE size_t
+Radix_key_(Unsigned_ty_ Val_, size_t Radix_)
+{
+  //< Mask (value 255 or 65535) and Shift (value 8 or 16) depends on the size of the bucket
+  constexpr uint16_t Mask_  = Radix_opts_.bucket_size - 1;
+  constexpr uint16_t Shift_ = Radix_opts_.bucket_size == 256U ? 8 : 16;
+
+  if constexpr (Radix_opts_.sort_order == radix_sort_order::asc)
+  {
+    return (Val_ >> Shift_ * Radix_) & Mask_;
+  }
+  else /* Radix_opts_.sort_order == radix_sort_order::desc */
+  {
+    return Mask_ - ((Val_ >> Shift_ * Radix_) & Mask_);
+  }
+}
+
+template<Radix_projection_tag_ Tag_, radix_options Radix_opts_, typename Ty_, typename Proj_functor_>
+ALWAYS_INLINE size_t
+Radix_key_(Ty_ const &Val_, size_t Radix_, Proj_functor_ const &Proj_func_)
+{
+  return Radix_key_<Radix_opts_>(Proj_func_(Tag_ {}, Proj_func_.Get_key_value_(Val_)), Radix_);
+}
 
 template<radix_options Radix_opts_, typename Ty_, typename Proj_functor_>
 ALWAYS_INLINE size_t
 Radix_key_(Ty_ const &Val_, size_t Radix_, Proj_functor_ const &Proj_func_)
 {
-  // Mask (value 255 or 65535) and Shift (value 8 or 16) depends on the size of the bucket
-  constexpr uint16_t Mask_  = Radix_opts_.bucket_size - 1;
-  constexpr uint16_t Shift_ = Radix_opts_.bucket_size == 256U ? 8 : 16;
+  return Radix_key_<Radix_projection_functor_default_tag_, Radix_opts_, Ty_, Proj_functor_>(Val_, Radix_, Proj_func_);
+}
 
-  if constexpr (Radix_opts_.sort_order == radix_order::asc)
+template<bool Is_last_pass_, radix_options Radix_opts_, typename Ty_, typename Proj_functor_>
+ALWAYS_INLINE void
+Radix_lsd_histogram_(size_t                            *Count_,
+                     Ty_ const                         &Val_,
+                     size_t                             Radix_,
+                     Proj_functor_ const               &Proj_func_,
+                     [[maybe_unused]] std::span<size_t> NaN_counts_ = {},
+                     [[maybe_unused]] size_t            Thread_id_  = 0)
+{
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_>)
   {
-    return (Proj_func_(Val_) >> static_cast<uint16_t>(Shift_ * Radix_)) & Mask_;
+    if constexpr (Is_last_pass_ and Radix_opts_.nan_pos != radix_nan_position::unhandled)
+    {
+      if (std::isnan(Proj_func_.Get_key_value_(Val_))) [[unlikely]]
+      {
+        ++NaN_counts_[Thread_id_];
+        return;
+      }
+    }
+    if constexpr (Is_last_pass_)
+    {
+      ++Count_[Radix_key_<Radix_opts_>(Val_, Radix_, Proj_func_)];
+    }
+    else
+    {
+      ++Count_[Radix_key_<Radix_opts_>(Proj_func_(Radix_float_bitwise_not_tag_, Proj_func_.Get_key_value_(Val_)),
+                                       Radix_)];
+    }
   }
-  else /* Radix_opts_.sort_order == radix_order::desc */
+
+  if constexpr (std::integral<typename Proj_functor_::Key_ty_>)
   {
-    return Mask_ - ((Proj_func_(Val_) >> static_cast<uint16_t>(Shift_ * Radix_)) & Mask_);
+    if constexpr (std::signed_integral<typename Proj_functor_::Key_ty_> and Is_last_pass_)
+    {
+      ++Count_[Radix_key_<Radix_opts_>(Proj_func_(Radix_int_xor_tag_, Proj_func_.Get_key_value_(Val_)), Radix_)];
+    }
+    else
+    {
+      ++Count_[Radix_key_<Radix_opts_>(
+          static_cast<typename Proj_functor_::Unsigned_ty_>(Proj_func_.Get_key_value_(Val_)), Radix_)];
+    }
   }
 }
 
-template<radix_options Radix_opts_, typename Random_point_, typename Random_buffer_point_, typename Proj_functor_>
+template<bool          Is_last_pass_,
+         radix_options Radix_opts_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
+ALWAYS_INLINE void
+Radix_lsd_collect_(Random_point_ &RESTRICT_KEYWORD        Begin_,
+                   size_t                                 Size_,
+                   size_t                                 Index_,
+                   Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                   size_t                                *Count_,
+                   size_t                                 Radix_,
+                   Proj_functor_ const                   &Proj_func_,
+                   [[maybe_unused]] size_t               &NaN_offset_ = 0)
+{
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_>)
+  {
+    if constexpr (Is_last_pass_ and Radix_opts_.nan_pos != radix_nan_position::unhandled)
+    {
+      if (std::isnan(Proj_func_.Get_key_value_(Begin_[Index_]))) [[unlikely]]
+      {
+        if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
+        {
+          Output_[--NaN_offset_] = std::move(Begin_[Index_]);
+        }
+        else if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)
+        {
+          Output_[Size_ - NaN_offset_--] = std::move(Begin_[Index_]);
+        }
+        return;
+      }
+    }
+    if constexpr (Is_last_pass_)
+    {
+      Output_[--Count_[Radix_key_<Radix_opts_>(Begin_[Index_], Radix_, Proj_func_)]] = std::move(Begin_[Index_]);
+    }
+    else
+    {
+      Output_[--Count_[Radix_key_<Radix_opts_>(
+          Proj_func_(Radix_float_bitwise_not_tag_, Proj_func_.Get_key_value_(Begin_[Index_])), Radix_)]] =
+          std::move(Begin_[Index_]);
+    }
+  }
+  if constexpr (std::integral<typename Proj_functor_::Key_ty_>)
+  {
+    if constexpr (std::signed_integral<typename Proj_functor_::Key_ty_> and Is_last_pass_)
+    {
+      Output_[--Count_[Radix_key_<Radix_opts_>(
+          Proj_func_(Radix_int_xor_tag_, Proj_func_.Get_key_value_(Begin_[Index_])), Radix_)]] =
+          std::move(Begin_[Index_]);
+    }
+    else
+    {
+      Output_[--Count_[Radix_key_<Radix_opts_>(
+          static_cast<typename Proj_functor_::Unsigned_ty_>(Proj_func_.Get_key_value_(Begin_[Index_])), Radix_)]] =
+          std::move(Begin_[Index_]);
+    }
+  }
+}
+
+template<bool          Is_lass_pass,
+         radix_options Radix_opts_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
 ALWAYS_INLINE void
 LSD_integer_radix_pass_(Random_point_ &RESTRICT_KEYWORD        Begin_,
                         size_t                                 Size_,
                         Random_buffer_point_ &RESTRICT_KEYWORD Output_,
-                        size_t                                 Curr_radix_,
-                        Proj_functor_ const                   &Proj_func_)
+                        size_t                                 Radix_,
+                        Proj_functor_ const                   &Proj_func_,
+                        [[maybe_unused]] std::span<size_t>     NaN_counts_ = {},
+                        [[maybe_unused]] size_t                Thread_id_  = 0)
 {
-  size_t Pos_[Radix_opts_.bucket_size] {};
-  // Histogram
+  size_t Count_[Radix_opts_.bucket_size] {};
+
   Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
   {
-    ++Pos_[Radix_key_<Radix_opts_>(Begin_[Index_], Curr_radix_, Proj_func_)];
+    Radix_lsd_histogram_<Is_lass_pass, Radix_opts_>(Count_, Begin_[Index_], Radix_, Proj_func_, NaN_counts_,
+                                                    Thread_id_);
   });
 
-  // Prefix Sum
-  Unroll_loop_<1, Radix_opts_.bucket_size, Radix_opts_.unroll_n>([&](size_t Index_)
+  size_t NaN_offset_ = 0;
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> &&
+                Radix_opts_.nan_pos != radix_nan_position::unhandled && Is_lass_pass)
   {
-    Pos_[Index_] += Pos_[Index_ - 1];
+    NaN_offset_ = std::reduce(NaN_counts_.begin(), NaN_counts_.end());
+    if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
+    {
+      Count_[0] += NaN_offset_;
+    }
+  }
+
+  size_t Non_empty_count_ = (Count_[0] != NaN_offset_);
+
+  Unroll_loop_<Radix_opts_.unroll_n>(1, Radix_opts_.bucket_size, [&](size_t Index_)
+  {
+   Non_empty_count_ += (Count_[Index_] != 0);
+    Count_[Index_] += Count_[Index_ - 1];
   });
 
-  // Collect
+  if (Non_empty_count_ <= 1)
+  {
+    return;
+  }
+
+#if defined(_MSC_VER) && _MSC_VER <= 1950
+  size_t Index_ = 0;
+
+  for (; Radix_opts_.unroll_n <= Size_ - Index_; Index_ += Radix_opts_.unroll_n)
+  {
+    for (size_t Roll_ = 0; Roll_ < Radix_opts_.unroll_n; ++Roll_)
+    {
+      Radix_lsd_collect_<Is_lass_pass, Radix_opts_>(Begin_, Size_, Size_ - 1 - (Index_ + Roll_), Output_, Count_,
+                                                    Radix_, Proj_func_, NaN_offset_);
+    }
+  }
+
+  for (; Index_ < Size_; ++Index_)
+  {
+    Radix_lsd_collect_<Is_lass_pass, Radix_opts_>(Begin_, Size_, Size_ - 1 - Index_, Output_, Count_, Radix_,
+                                                  Proj_func_, NaN_offset_);
+  }
+#else
   Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
   {
-    size_t Curr_index_ = Size_ - 1 - Index_;
-    Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[Curr_index_], Curr_radix_, Proj_func_)]] =
-        std::move(Begin_[Curr_index_]);
+    Radix_lsd_collect_<Is_lass_pass, Radix_opts_>(Begin_, Size_, Size_ - 1 - Index_, Output_, Count_, Radix_,
+                                                  Proj_func_, NaN_offset_);
   });
+#endif // defined(_MSC_VER) && _MSC_VER <= 1950
+
   std::swap(Begin_, Output_);
 }
 
 template<radix_options Radix_opts_, typename Random_point_, typename Random_buffer_point_, typename Proj_functor_>
-ALWAYS_INLINE void
+inline void
 LSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
                         size_t                                 Size_,
                         Random_buffer_point_ &RESTRICT_KEYWORD Output_,
                         size_t                                 Radix_,
                         Proj_functor_ const                   &Proj_func_,
-                        size_t                                 Deep_ = 0)
+                        [[maybe_unused]] size_t                Deep_ = 0)
+{
+  if (Size_ == 0) [[unlikely]]
+  {
+    return;
+  }
+
+  for (size_t Curr_radix_ = 0; Curr_radix_ < Radix_ - 1; ++Curr_radix_)
+  {
+    LSD_integer_radix_pass_<false, Radix_opts_>(Begin_, Size_, Output_, Curr_radix_, Proj_func_);
+  }
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> &&
+                Radix_opts_.nan_pos != radix_nan_position::unhandled)
+  {
+    size_t            NaN_count_ = 0;
+    std::span<size_t> NaN_counts_span_(&NaN_count_, 1);
+    LSD_integer_radix_pass_<true, Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, NaN_counts_span_);
+  }
+  else
+  {
+    LSD_integer_radix_pass_<true, Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_);
+  }
+
+  if (Radix_ & 1)
+  {
+    std::move(Begin_, Begin_ + Size_, Output_);
+  }
+}
+
+template<radix_options Radix_opts_, typename Random_point_, typename Random_buffer_point_, typename Proj_functor_>
+inline void
+MSD_recursion_exit_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
+                                       size_t                                 Size_,
+                                       Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                                       size_t                                 Radix_,
+                                       Proj_functor_ const                   &Proj_func_,
+                                       [[maybe_unused]] size_t                Deep_ = 0)
 {
   if (Size_ == 0)
   {
@@ -495,60 +735,54 @@ LSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
     Radix_ = Radix_ / 2 + 1; // floor
   }
 
-  for (size_t Curr_radix_ { 0 }; Curr_radix_ < Radix_; ++Curr_radix_)
+  for (size_t Curr_radix_ = 0; Curr_radix_ < Radix_; ++Curr_radix_)
   {
-    size_t Pos_[Radix_opts_.bucket_size] {};
+    size_t Count_[Radix_opts_.bucket_size] {};
+
     // Histogram
-    //for (size_t Index_ { 0 }; Index_ < Size_; ++Index_)
-    //{
-    //  ++Pos_[Radix_key_<Radix_opts_>(Begin_[Index_], Curr_radix_, Proj_func_)];
-    //}
     Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
     {
-      ++Pos_[Radix_key_<Radix_opts_>(Begin_[Index_], Curr_radix_, Proj_func_)];
+      ++Count_[Radix_key_<Radix_opts_>(Begin_[Index_], Curr_radix_, Proj_func_)];
     });
+
     // Prefix Sum
-    Unroll_loop_<1, Radix_opts_.bucket_size, Radix_opts_.unroll_n>([&](size_t Index_)
+    Unroll_loop_<Radix_opts_.unroll_n>(1, Radix_opts_.bucket_size, [&](size_t Index_)
     {
-      Pos_[Index_] += Pos_[Index_ - 1];
+      Count_[Index_] += Count_[Index_ - 1];
     });
 
-    size_t Index_ { 0 };
-    for (; Index_ + 7 < Size_; Index_ += 8)
-    {
-      size_t i0 = Size_ - 1 - Index_;
-      size_t i1 = i0 - 1;
-      size_t i2 = i0 - 2;
-      size_t i3 = i0 - 3;
-      size_t i4 = i0 - 4;
-      size_t i5 = i0 - 5;
-      size_t i6 = i0 - 6;
-      size_t i7 = i0 - 7;
+    //< msvc ver [19.28, 19.44] integer data type, unroll for is wrong, float-point data type is right
+    //< msvc ver >= 19.50 (VS 18.0) all arithmetic right
 
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i0], Curr_radix_, Proj_func_)]] = std::move(Begin_[i0]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i1], Curr_radix_, Proj_func_)]] = std::move(Begin_[i1]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i2], Curr_radix_, Proj_func_)]] = std::move(Begin_[i2]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i3], Curr_radix_, Proj_func_)]] = std::move(Begin_[i3]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i4], Curr_radix_, Proj_func_)]] = std::move(Begin_[i4]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i5], Curr_radix_, Proj_func_)]] = std::move(Begin_[i5]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i6], Curr_radix_, Proj_func_)]] = std::move(Begin_[i6]);
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[i7], Curr_radix_, Proj_func_)]] = std::move(Begin_[i7]);
+    // Using template unrolling with strong inlining(inline __forceinline) can cause sorting of 'integer data'
+    // to generate assembly errors, leading to sorting errors, which was fixed in MSVC ver >= 19.50 (VS 18.0)
+
+    // Collect
+#if defined(_MSC_VER) && _MSC_VER <= 1950
+    size_t Index_ = 0;
+
+    for (; Radix_opts_.unroll_n <= Size_ - Index_; Index_ += Radix_opts_.unroll_n)
+    {
+      for (size_t Roll_ = 0; Roll_ < Radix_opts_.unroll_n; ++Roll_)
+      {
+        Output_[--Count_[Radix_key_<Radix_opts_>(Begin_[Size_ - 1 - (Index_ + Roll_)], Curr_radix_, Proj_func_)]] =
+            std::move(Begin_[Size_ - 1 - (Index_ + Roll_)]);
+      }
     }
 
     for (; Index_ < Size_; ++Index_)
     {
-      size_t Curr_index_ = Size_ - 1 - Index_;
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[Curr_index_], Curr_radix_, Proj_func_)]] =
-          std::move(Begin_[Curr_index_]);
+      Output_[--Count_[Radix_key_<Radix_opts_>(Begin_[Size_ - 1 - Index_], Curr_radix_, Proj_func_)]] =
+          std::move(Begin_[Size_ - 1 - Index_]);
     }
-
-    // Collect
+#else
     Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
     {
-      size_t Curr_index_ = Size_ - 1 - Index_;
-      Output_[--Pos_[Radix_key_<Radix_opts_>(Begin_[Curr_index_], Curr_radix_, Proj_func_)]] =
-          std::move(Begin_[Curr_index_]);
+      Output_[--Count_[Radix_key_<Radix_opts_>(Begin_[Size_ - 1 - Index_], Curr_radix_, Proj_func_)]] =
+          std::move(Begin_[Size_ - 1 - Index_]);
     });
+#endif // defined(_MSC_VER) && _MSC_VER <= 1950
+
     std::swap(Begin_, Output_);
   }
 
@@ -570,7 +804,7 @@ MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
   // If the chunk _Size is too small, then turn to serial least-significant-byte radix sort
   if (Size_ <= Radix_opts_.chunk_size || Radix_ < 1)
   {
-    return LSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_, Deep_);
+    return MSD_recursion_exit_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_, Deep_);
   }
 
   size_t Chunk_[Radix_opts_.bucket_size] {};
@@ -582,7 +816,7 @@ MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
 
   size_t Non_empty_count_ = 0, Prev_sum_ = 0;
 
-  Unroll_loop_<0, Radix_opts_.bucket_size, Radix_opts_.unroll_n>([&](size_t Index_)
+  Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
   {
     size_t Original_val_ = Chunk_[Index_];
     Non_empty_count_ += (Original_val_ != 0);
@@ -600,7 +834,7 @@ MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
           std::move(Begin_[Curr_index_]);
     });
 
-    Unroll_loop_<0, Radix_opts_.bucket_size - 1, Radix_opts_.unroll_n>([&](size_t Index_)
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size - 1, [&](size_t Index_)
     {
       auto *New_beign_  = Begin_ + Chunk_[Index_];
       auto *New_output_ = Output_ + Chunk_[Index_];
@@ -635,10 +869,26 @@ Radix_sort_impl_(Exec_policy_ && /*Expo_*/,
                  Proj_functor_ const                   &Proj_func_)
 {
   using Expo_ty_ = std::remove_cvref_t<Exec_policy_>;
+
   if constexpr (std::same_as<Expo_ty_, std::execution::sequenced_policy> or
                 std::same_as<Expo_ty_, std::execution::unsequenced_policy>)
   {
-    MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
+    if constexpr (sizeof(typename Proj_functor_::Key_ty_) > 4)
+    {
+      MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
+    }
+    else
+    {
+      if constexpr (Radix_opts_.bucket_size == 256U)
+      {
+        Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+      }
+      else /*if constexpr (Radix_opts_.bucket_size == 65536U)*/
+      {
+        Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+      }
+      LSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
+    }
   }
   else /*if constexpr (std::same_as<Expo_ty_, std::execution::parallel_policy> or
                      std::same_as<Expo_ty_, std::execution::parallel_unsequenced_policy>)*/
@@ -676,44 +926,48 @@ inline void radix_sort(
   auto *RESTRICT_KEYWORD Primary_addr_ = &*Begin_;
 
   size_t Range_left_ = 0, Range_right_ = Size_;
-  size_t Max_val_;
+  size_t Max_val_ = 0;
 
-  if constexpr (std::integral<typename Proj_functor_::Key_ty_> ||
-                (std::floating_point<typename Proj_functor_::Key_ty_> &&
-                 Radix_opts_.nan_pos == radix_nan_position::unhandled))
+  if constexpr (sizeof(typename Proj_functor_::Key_ty_) > 4)
   {
-    Max_val_ = Max_element_<false, Radix_opts_.unroll_n>(Primary_addr_, Size_, Proj_func_);
-  }
-  else if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
-  {
-    auto Max_with_part_ = Max_while_partition_(Primary_addr_, Primary_addr_ + Size_, [&](auto const &Val_)
+    if constexpr (std::integral<typename Proj_functor_::Key_ty_> ||
+                  (std::floating_point<typename Proj_functor_::Key_ty_> &&
+                   Radix_opts_.nan_pos == radix_nan_position::unhandled))
     {
-      return std::isnan(Proj_func_.F_(Val_));
-    }, Proj_func_);
-
-    Range_left_ = Max_with_part_.Part_index_;
-    Max_val_    = Max_with_part_.Max_val_;
-  }
-  else /*if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)*/
-  {
-    auto Max_with_part_ = Max_while_partition_(Primary_addr_, Primary_addr_ + Size_, [&](auto const &Val_)
+      Max_val_ = Max_element_<false, Radix_opts_.unroll_n>(Primary_addr_, Size_, Proj_func_);
+    }
+    else if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
     {
-      return !std::isnan(Proj_func_.F_(Val_));
-    }, Proj_func_);
+      auto Max_with_part_ = Max_while_partition_(Primary_addr_, Primary_addr_ + Size_, [&](auto const &Val_)
+      {
+        return std::isnan(Proj_func_.Get_key_value_(Val_));
+      }, Proj_func_);
 
-    Range_right_ = Max_with_part_.Part_index_;
-    Max_val_     = Max_with_part_.Max_val_;
+      Range_left_ = Max_with_part_.Part_index_;
+      Max_val_    = Max_with_part_.Max_val_;
+    }
+    else /*if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)*/
+    {
+      auto Max_with_part_ = Max_while_partition_(Primary_addr_, Primary_addr_ + Size_, [&](auto const &Val_)
+      {
+        return !std::isnan(Proj_func_.Get_key_value_(Val_));
+      }, Proj_func_);
+
+      Range_right_ = Max_with_part_.Part_index_;
+      Max_val_     = Max_with_part_.Max_val_;
+    }
+
+    // If all elements are NaN or Zero, then there is no need to sort
+    if (Max_val_ == 0) [[unlikely]]
+    {
+      return;
+    }
+
+    // Calculate highest byte index
+    Max_val_ = static_cast<size_t>((std::bit_width(Max_val_) + 7) / 8 - 1);
+
+    Primary_addr_ = Primary_addr_ + Range_left_;
   }
-
-  // If all elements are NaN or Zero, then there is no need to sort
-  if (Max_val_ == 0) [[unlikely]]
-  {
-    return;
-  }
-
-  size_t Highest_byte_idx_ = static_cast<size_t>((std::bit_width(Max_val_) + 7) / 8 - 1);
-
-  Primary_addr_ = Primary_addr_ + Range_left_;
 
   AllocatedBufferHolder_<Allocator_> Holder_(Range_right_ - Range_left_, Alloc_);
   auto *RESTRICT_KEYWORD             Buffer_ = Holder_.Get_buffer_();
@@ -731,8 +985,8 @@ inline void radix_sort(
   //
   // So we always sort the range of non-NaN elements [0, Range_right_)
 
-  Radix_sort_impl_<Radix_opts_>(std::forward<Exec_policy_>(Expo_), Primary_addr_, Range_right_, Buffer_,
-                                Highest_byte_idx_, Proj_func_);
+  Radix_sort_impl_<Radix_opts_>(std::forward<Exec_policy_>(Expo_), Primary_addr_, Range_right_, Buffer_, Max_val_,
+                                Proj_func_);
 }
 
 template<radix_options               Radix_opts_ = radix_options {},
@@ -743,61 +997,133 @@ inline void radix_sort(Exec_policy_ &&Expo_, Random_iter_ Begin_, Random_iter_ E
 {
   using Value_type_ = typename std::iterator_traits<Random_iter_>::value_type;
 
-  radix_sort(std::forward<Exec_policy_>(Expo_), Begin_, End_, std::allocator<Value_type_> {},
-             std::forward<Key_function_>(F_));
+  radix_sort<Radix_opts_>(std::forward<Exec_policy_>(Expo_), Begin_, End_, std::allocator<Value_type_> {},
+                          std::forward<Key_function_>(F_));
 }
 
-} // namespace stdexx
+} // namespace stdex
 
 #pragma pop_macro("ALWAYS_INLINE")
 #pragma pop_macro("RESTRICT_KEYWORD")
 
-#include <ppl.h>
+#include <iostream>
 #include <random>
 
-#include "algorithm/radix_sort.hpp"
-#include "profiling/ticktock.hpp"
+template<typename T>
+void
+print_summary(const std::vector<T> &data, bool is_sorted, bool ascending)
+{
+  std::cout << (is_sorted ? "PASS" : "FAIL") << " (" << (ascending ? "asc" : "desc") << ")\n";
+  if (!is_sorted && data.size() > 0)
+  {
+    std::cout << "  first few elements: ";
+    for (size_t i = 0; i < std::min<size_t>(5, data.size()); ++i)
+      std::cout << data[i] << ' ';
+    std::cout << '\n';
+  }
+}
+
+template<typename T>
+void
+test_type(bool ascending)
+{
+  constexpr size_t   N = 100000;
+  std::random_device rd;
+  std::mt19937       gen(rd());
+
+  std::vector<T> data(N);
+
+  // 生成随机数据
+  if constexpr (std::is_integral_v<T>)
+  {
+    if constexpr (std::is_signed_v<T>)
+    {
+      std::uniform_int_distribution<T> dist(std::numeric_limits<T>::min(), std::numeric_limits<T>::max());
+      for (auto &v : data)
+        v = dist(gen);
+    }
+    else
+    { // unsigned
+      std::uniform_int_distribution<T> dist(std::numeric_limits<T>::min(), std::numeric_limits<T>::max());
+      for (auto &v : data)
+        v = dist(gen);
+    }
+  }
+  else
+  { // floating point
+    std::uniform_real_distribution<T> dist(-100000.0, 100000.0);
+    // 以 2% 的概率生成 INFINITY 或 -INFINITY
+    std::bernoulli_distribution inf_prob(0.02);
+    std::bernoulli_distribution sign_prob(0.5);
+    for (auto &v : data)
+    {
+      if (inf_prob(gen))
+      {
+        v = sign_prob(gen) ? std::numeric_limits<T>::infinity() : -std::numeric_limits<T>::infinity();
+      }
+      else
+      {
+        v = dist(gen);
+      }
+    }
+  }
+
+  // 复制一份用于排序
+  std::vector<T> sorted = data;
+
+  // 调用 radix_sort
+  if (ascending)
+  {
+    stdex::radix_sort(std::execution::seq, sorted.begin(), sorted.end());
+  }
+  else
+  {
+    stdex::radix_sort<stdex::radix_options { .sort_order = stdex::radix_sort_order::desc }>(
+        std::execution::seq, sorted.begin(), sorted.end());
+  }
+
+  // 验证排序结果
+  bool ok;
+  if (ascending)
+  {
+    ok = std::is_sorted(sorted.begin(), sorted.end());
+  }
+  else
+  {
+    ok = std::is_sorted(sorted.begin(), sorted.end(), std::greater<>());
+  }
+  std::cout << typeid(T).name() << " : ";
+  std::cout << (ok ? "PASS" : "FAIL") << " (" << (ascending ? "asc" : "desc") << ")\n";
+}
 
 int
 main()
 {
-#if 1
-  //std::vector<int32_t> v { 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5 };
+  std::vector v { INFINITY, -INFINITY, NAN, -0.0f, 1.0f / 1.0f, 0.0f, -1.0f / 1.0f, std::sqrt(-1.0f), 3.14f };
+  stdex::radix_sort<stdex::radix_options { .nan_pos = stdex::radix_nan_position::end }>(std::execution::seq, v.begin(),
+                                                                                        v.end());
+  std::println("{}", v);
 
-  std::random_device rd;
-  std::mt19937       gen(rd());
-  constexpr auto     N = 65536 * 4 * 4;
-  // 2. 定义整数分布范围，这里使用 0 ~ 10000 作为示例
-  std::uniform_real_distribution<float> dist(INT_MIN, INT_MAX);
+  ////std::cout << "=== Testing ascending order (default) ===\n";
+  //test_type<int64_t>(true);
+  //test_type<uint64_t>(true);
+  //test_type<double>(true);
 
-  // 3. 创建 vector 并预留空间（提高性能）
-  std::vector<float> v;
-  v.reserve(N);
+  //test_type<int16_t>(true);
+  //test_type<uint16_t>(true);
+  //test_type<int32_t>(true);
+  //test_type<uint32_t>(true);
+  //test_type<float>(true);
 
-  // 4. 生成 10000 个随机数并填入 vector
-  std::generate_n(std::back_inserter(v), N, [&]()
-  {
-    return dist(gen);
-  });
+  ////std::cout << "\n=== Testing descending order (radix_sort_order::desc) ===\n";
+  //test_type<int16_t>(false);
+  //test_type<uint16_t>(false);
+  //test_type<int32_t>(false);
+  //test_type<uint32_t>(false);
+  //test_type<float>(false);
 
-  //std::vector<int32_t> v { 12, 1, 123, 1234, 123456, 12345, 12345678, 123456789, 1234567891, 1234567, 0 };
-
-#else
-  std::vector<float> v { INFINITY, -INFINITY, NAN, -0.0f, 1.0f / 1.0f, 0.0f, -1.0f / 1.0f, std::sqrt(-1.0f), 3.14f };
-#endif // 1
-  auto vv = v;
-
-  TICK(stdexx);
-  stdexx::radix_sort(std::execution::seq, v.begin(), v.end());
-  std::println("{}", std::is_sorted(v.begin(), v.end()));
-  TOCK(stdexx);
-
-  /*TICK(stdex);
-  stdex::radix_sort(std::execution::seq, vv.begin(), vv.end());
-  std::println("{}", std::is_sorted(vv.begin(), vv.end()));
-  TOCK(stdex);*/
-
-  /*concurrency::parallel_radixsort(vv.begin(), vv.end(), concurrency::_Radix_sort_default_function<int> {}, 10);
-  std::sort(v.begin(), v.end());*/
+  //test_type<double>(false);
+  //test_type<int64_t>(false);
+  //test_type<uint64_t>(false);
   return 0;
 }
