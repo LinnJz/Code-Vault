@@ -1,2247 +1,1453 @@
-﻿#pragma once
+﻿/*
+ * stdex::radix_sort – A High-Performance Parallel/Sequential Radix Sort for C++20
+ * ==============================================================================
+ *
+ * OVERVIEW
+ * --------
+ * This header provides a highly optimized radix sort implementation supporting:
+ *   - Integral and floating‑point types (float, double)
+ *   - Custom key extraction (projection) and comparison order (ascending / descending)
+ *   - Fine‑grained control over NaN placement (beginning, end, or unhandled)
+ *   - Sequential, parallel, unsequenced, and parallel_unsequenced execution policies
+ *   - Custom allocators for the temporary buffer
+ *   - Hybrid LSD (Least Significant Digit) / MSD (Most Significant Digit) strategy
+ *   - Loop unrolling, cache‑friendly bucket processing, and OpenMP parallelism
+ *
+ * The implementation automatically selects between LSD and MSD based on the key type
+ * size and the chosen execution policy. For 32‑bit keys (or smaller) LSD is used;
+ * for 64‑bit keys MSD recursion is preferred when the execution policy allows it.
+ * Both strategies can be forced via the `radix_options` structure.
+ *
+ *
+ * DESIGN & IMPLEMENTATION NOTES
+ * -----------------------------
+ *
+ * 1. Key Projection & Transformation
+ *    - `radix_default_key_function` extracts the sort key (by default the element itself).
+ *    - Signed integers are transformed via a bias (midpoint shift) so that negative
+ *      values appear before positives in unsigned radix order.
+ *    - Floating‑point numbers are bit‑cast to unsigned integers and the sign bit is
+ *      flipped, placing negative zeros and negatives correctly. NaNs are handled
+ *      separately when requested.
+ *
+ * 2. Radix Digit Selection
+ *    - Two bucket sizes are supported: 256 (8‑bit digit) and 65536 (16‑bit digit).
+ *    - Smaller bucket size reduces memory traffic but increases the number of passes.
+ *    - The number of passes is `sizeof(key_type)` for LSD (when bucket size == 256)
+ *      or `sizeof(key_type)/2` for 16‑bit LSD. MSD recursion uses one pass per digit.
+ *
+ * 3. Parallelism Strategy
+ *    - OpenMP is used for both histogramming and scattering.
+ *    - The input range is partitioned into nearly equal chunks per thread.
+ *    - Histograms are private per thread and then merged with a parallel prefix sum.
+ *    - MSD recursion parallelizes over independent buckets after the first digit pass.
+ *
+ * 4. Memory Management
+ *    - A temporary buffer of the same size as the input range is allocated using the
+ *      provided allocator (or `std::allocator` by default).
+ *    - For small thread‑local bucket arrays, stack memory (`alloca`) is used to avoid
+ *      heap allocations.
+ *    - The `AllocatedBufferHolder_` RAII class ensures proper construction/destruction
+ *      of non‑trivial types.
+ *
+ * 5. Floating‑Point & NaN Handling
+ *    - NaNs are detected via `std::isnan`. When `nan_pos` is `begin` or `end`, a
+ *      partitioning step moves all NaNs to the chosen side before sorting the non‑NaN
+ *      elements. This preserves the relative order of NaNs (which are all considered
+ *      equal by the sorting key).
+ *    - Infinity values are handled correctly because their bit patterns are ordered
+ *      after the sign‑flip transformation.
+ *
+ * 6. Performance Optimisations
+ *    - Loop unrolling (configurable via `unroll_n` in `radix_options`).
+ *    - `RESTRICT_KEYWORD` (__restrict) to enable better alias analysis.
+ *    - `ALWAYS_INLINE` for critical small functions.
+ *    - Trivial type detection avoids unnecessary construction/destruction in buffers.
+ *    - Early exit when only one non‑empty bucket exists.
+ *    - MSD recursion uses a threshold (`chunk_size`) to switch to LSD for small
+ *      sub‑problems, reducing recursion overhead.
+ *
+ *
+ * USAGE EXAMPLES
+ * --------------
+ *
+ * Basic ascending sort with default execution policy (sequential):
+ *   std::vector<int> v = {5, 2, 8, 1};
+ *   stdex::radix_sort(std::execution::seq, v.begin(), v.end());
+ *
+ * Parallel descending sort for floats, placing NaNs at the end:
+ *   constexpr stdex::radix_options opts {
+ *      .sort_order = stdex::radix_sort_order::desc,
+ *      .nan_pos    = stdex::radix_nan_position::end,
+ *   }
+ *   stdex::radix_sort<opts>(std::execution::par, v.begin(), v.end());
+ *
+ * Using a custom key projection (e.g., sort by absolute value):
+ *   auto abs_key = [](double x) { return std::fabs(x); };
+ *   stdex::radix_sort(std::execution::par_unseq, v.begin(), v.end(), abs_key);
+ *
+ * Sorting a reverse range (descending order can also be achieved via reverse iterators):
+ *   stdex::radix_sort(std::execution::par, v.rbegin(), v.rend());
+ *
+ * Using a custom allocator:
+ *   std::vector<int, MyAllocator<int>> v(10000);
+ *   // ... fill v ...
+ *   stdex::radix_sort(std::execution::par, v.begin(), v.end(), MyAllocator<int>());
+ *
+ *
+ * API REFERENCE (brief)
+ * ---------------------
+ *
+ * namespace stdex {
+ *
+ *   enum class radix_sort_order { asc, desc };
+ *   enum class radix_nan_position { unhandled, begin, end };
+ *
+ *   struct radix_options {
+ *     uint8_t  unroll_n    = 8;      // loop unroll factor
+ *     uint16_t bucket_size = 256;    // 256 or 65536
+ *     uint32_t chunk_size  = 256*256;// threshold for MSD→LSD fallback
+ *     radix_sort_order   sort_order = asc;
+ *     radix_nan_position nan_pos    = unhandled;
+ *   };
+ *
+ *   template<radix_options opts = radix_options{},
+ *            class ExecPolicy,
+ *            RandomAccessIterator Iter,
+ *            class Allocator = std::allocator<std::iter_value_t<Iter>>,
+ *            class KeyFunc = radix_default_key_function<std::iter_value_t<Iter>>>
+ *   void radix_sort(ExecPolicy&& policy,
+ *                   Iter first, Iter last,
+ *                   const Allocator& alloc = Allocator(),
+ *                   KeyFunc&& key_func = {});
+ *
+ *   // Overload without explicit allocator (uses std::allocator)
+ *   template<radix_options opts = radix_options{},
+ *            class ExecPolicy,
+ *            RandomAccessIterator Iter,
+ *            class KeyFunc = radix_default_key_function<std::iter_value_t<Iter>>>
+ *   void radix_sort(ExecPolicy&& policy, Iter first, Iter last, KeyFunc&& key_func = {});
+ * }
+ *
+ * Supported execution policies:
+ *   - std::execution::seq                (sequential)
+ *   - std::execution::par                (parallel, uses OpenMP)
+ *   - std::execution::unseq              (vectorised sequential)
+ *   - std::execution::par_unseq          (parallel + vectorisation)
+ *
+ * REQUIREMENTS
+ * ------------
+ * - C++20 or later
+ * - OpenMP 2.0+ (for parallel policies)
+ * - Compilers: GCC >= 11.1, Clang >= 13.0, MSVC >= 19.28 (VS 2019 16.8)
+ *
+ * ==============================================================================
+ */
 #include <omp.h>
 
-#include <array>
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <concepts>
 #include <execution>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <span>
 #include <type_traits>
 
-#include "simd/simd_detect.hpp"
+#pragma push_macro("ALWAYS_INLINE")
+#pragma push_macro("RESTRICT_KEYWORD")
+#undef ALWAYS_INLINE
+#undef RESTRICT_KEYWORD
 
-#define STRINGIFY(x)            #x
-#define EXPAND_AND_STRINGIFY(x) STRINGIFY(x)
-
-#ifdef _MSC_VER
-#  define WARNING(msg)                                                          \
-    __pragma(message(__FILE__ "(" _CRT_STRINGIZE(__LINE__) "): warning: " msg))
-#elif defined(__GNUC__) || defined(__clang__)
-#  define WARNING(msg) _Pragma(STRINGIFY(GCC warning msg))
+#if 1
+#  if defined(__GNUC__)
+#    define ALWAYS_INLINE inline __attribute__((always_inline))
+#  elif defined(_MSC_VER)
+#    define ALWAYS_INLINE inline __forceinline
+#  else
+#    define ALWAYS_INLINE inline
+#  endif
 #else
-#  define WARNING(msg)
+#  define ALWAYS_INLINE
 #endif
 
-#if defined(__clang__)
-// Clang support clang loop unroll_count or unroll
-#  define LOOP_UNROLL(n) _Pragma(EXPAND_AND_STRINGIFY(clang loop unroll_count(n)))
-#  define ALWAYS_INLINE  inline __attribute__((always_inline))
-#elif defined(__GNUC__) && !defined(__INTEL_COMPILER) && __GNUC__ >= 8
-// GCC 8+ support #pragma GCC unroll
-#  define LOOP_UNROLL(n) _Pragma(EXPAND_AND_STRINGIFY(GCC unroll n))
-#  define ALWAYS_INLINE  inline __attribute__((always_inline))
-#elif defined(_MSC_VER) && _MSC_VER >= 1920
-// MSVC 2019+ support __pragma(unroll)
-#  define LOOP_UNROLL(n)  //__pragma(unroll(n))
-#  define ALWAYS_INLINE   inline __forceinline
-#else
-#  define LOOP_UNROLL(n)
-#  define ALWAYS_INLINE inline
+#if defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER)
+#  define RESTRICT_KEYWORD __restrict
+#else // assume unsupported compiler
+#  define RESTRICT_KEYWORD
 #endif
 
-namespace stdex {
-
-enum class SortOrder
+namespace stdex
 {
-  Ascending,
-  Descending
+enum class radix_sort_order
+{
+  asc,
+  desc
 };
 
-// < Even with signed types, if you are sure there will be no negative numbers,
-// < you can enable the unsigned option to improve performance to some extent.
-enum class HasNegative
+enum class radix_nan_position
 {
-  Yes,
-  No
-};
-
-enum class NaNPosition
-{
-  //< Temp Data: {INFINITY, -INFINITY, NAN, 1.0f / 1.0f, -1.0f / 1.0f,
+  //< Temp Data: {INFINITY, -INFINITY, NAN, -0.0f, 1.0f / 1.0f, 0.0f, -1.0f / 1.0f,
   //         std::sqrt(-1.0f), 3.14f}
 
-  //< -nan(ind) always ahead, nan always behind
-  Unhandled,  // -nan(ind) -inf -1 1 3.14 inf nan
-
-  //< -nan(ind)/nan order is uncertain, but they are always behind/ahead of
-  // other values
-  AtStart,  // nan -nan(ind) -inf -1 1 3.14 inf
-  AtEnd     // -inf -1 1 3.14 inf -nan(ind) nan
+  unhandled, //< maybe output: -nan(ind) -inf -1 -0 0 1 3.14 inf nan
+  begin,     //< maybe output: -nan(ind) nan -inf -1 -0 0 1 3.14 inf
+  end        //< maybe output: -inf -1 -0 0 1 3.14 inf nan -nan(ind)
 };
 
-template<typename T>
-struct identity_key_extractor
+template<typename Ty_>
+struct radix_default_key_function
 {
-  template<typename U>
-  constexpr auto operator() (U&& value) const noexcept
-      -> std::enable_if_t<std::is_same_v<std::decay_t<U>, T>, T>
+  constexpr Ty_ operator() (Ty_ Val_) const noexcept { return Val_; }
+};
+
+struct radix_options
+{
+  uint8_t            unroll_n    = 8U;
+  uint16_t           bucket_size = 256U;
+  uint32_t           chunk_size  = 256U * 256U;
+  radix_sort_order   sort_order  = radix_sort_order::asc;
+  radix_nan_position nan_pos     = radix_nan_position::unhandled;
+};
+
+inline consteval radix_options
+Adjust_radix_options_(radix_options Opts_, bool Is_reverse_) noexcept
+{
+  if (Is_reverse_)
   {
-    return std::forward<U>(value);
+    Opts_.sort_order = Opts_.sort_order == radix_sort_order::asc ? radix_sort_order::desc : radix_sort_order::asc;
   }
-};
-
-template<typename Class, typename Key>
-struct member_key_extractor
-{
-  Key Class::* member_ptr;
-
-  constexpr member_key_extractor(Key Class::* ptr) noexcept : member_ptr(ptr) { }
-
-  constexpr Key operator() (const Class& obj) const noexcept
-  {
-    return obj.*member_ptr;
-  }
-};
-
-template<typename Func>
-struct function_key_extractor
-{
-  Func func;
-
-  constexpr function_key_extractor(Func f) : func(std::move(f)) { }
-
-  template<typename T>
-  constexpr auto operator() (T&& value) const
-      -> decltype(func(std::forward<T>(value)))
-  {
-    return func(std::forward<T>(value));
-  }
-};
-
-using Bucket_size_t    = std::uint32_t;
-using Dataset_size32_t = std::uint32_t;
-using Dataset_size64_t = std::uint64_t;
-
-namespace details {
-template<typename ExPo>
-concept SupportedExecutionPolicy =
-    std::same_as<std::decay_t<ExPo>, std::execution::sequenced_policy> ||
-    std::same_as<std::decay_t<ExPo>, std::execution::parallel_policy> ||
-    std::same_as<std::decay_t<ExPo>, std::execution::unsequenced_policy> ||
-    std::same_as<std::decay_t<ExPo>, std::execution::parallel_unsequenced_policy>;
-
-template<typename T, typename Class>
-concept MemberPointer =
-    std::is_member_pointer_v<T> && requires (T ptr, Class obj) {
-      { obj.*ptr } -> std::convertible_to<typename std::remove_pointer<T>::type>;
-    };
-
-template<typename Func, typename ValueType, typename KeyType>
-concept InvocableKeyExtractor = std::invocable<Func, ValueType> &&
-    std::convertible_to<std::invoke_result_t<Func, ValueType>, KeyType>;
-
-template<typename Iter>
-concept ContiguousIterator = std::contiguous_iterator<Iter>;
-
-template<typename T>
-concept ArithmeticKey = std::is_arithmetic_v<T> && !std::same_as<T, bool>;
-
-template<typename Compare>
-concept ValidComparator =
-    std::same_as<Compare, std::less<>> || std::same_as<Compare, std::greater<>>;
-
-template<Bucket_size_t BucketSize>
-inline constexpr bool is_valid_bucket_size =
-    BucketSize == 256U || BucketSize == 65536U;
-
-template<typename Key_t, Bucket_size_t Bucket_size>
-struct Radix_constexpr_params
-{
-  using Unsigned_t = std::make_unsigned_t<std::conditional_t<
-      std::is_floating_point_v<Key_t>,
-      std::conditional_t<sizeof(Key_t) == 4, std::uint32_t, std::uint64_t>,
-      Key_t>>;
-
-  static constexpr std::uint8_t Passes =
-      Bucket_size == 256U ? sizeof(Key_t) : sizeof(Key_t) >> 1;
-  static constexpr std::uint8_t  Shift_of_sign_bit = (sizeof(Key_t) << 3) - 1;
-  static constexpr std::uint8_t  Shift_of_byte_idx = Bucket_size == 256U ? 3 : 4;
-  static constexpr std::uint16_t Mask              = Bucket_size - 1;
-  static constexpr Unsigned_t    Sign_bit_mask     = Unsigned_t { 1 }
-      << Shift_of_sign_bit;
-  static constexpr Unsigned_t All_bits_mask = ~Unsigned_t { 0 };
-};
-}  // namespace details
-
-template<details::ContiguousIterator ContigIter>
-using Identity_ke = identity_key_extractor<std::iter_value_t<ContigIter>>;
-
-template<details::ContiguousIterator ContigIter>
-using Member_ke = member_key_extractor<
-    std::iter_value_t<ContigIter>,
-    std::decay_t<decltype(std::declval<std::iter_value_t<ContigIter>>())>>;
-
-template<details::ContiguousIterator ContigIter>
-using Function_ke = function_key_extractor<std::iter_value_t<ContigIter>>;
-
-template<typename KeyExtractor, std::integral DatasetSize>
-struct Radix_template_params
-{
-  using Key_extractor_t = KeyExtractor;
-  using Dataset_size_t  = DatasetSize;
-  Bucket_size_t Bucket_size { 256U };
-  SortOrder     Order { SortOrder::Ascending };
-  HasNegative   Has_negative { HasNegative::Yes };
-  NaNPosition   NaN_position { NaNPosition::Unhandled };
-};
-
-namespace details {
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_count_buckets(Size_t Start_idx, Size_t End_idx,
-                                     Size_t  Pass, const Value_t* __restrict Src,
-                                     Size_t* Bucket_counts,
-                                     const Key_extractor_t&   Extractor,
-                                     [[maybe_unused]] Size_t* NaN_counts,
-                                     [[maybe_unused]] int     Thread_id)
-{
-  using Key_t      = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-
-  LOOP_UNROLL(8) for (Size_t Idx = Start_idx; Idx < End_idx; ++Idx)
-  {
-    auto Key = Extractor(Src [Idx]);
-
-    if constexpr (Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      if (std::isnan(Key)) [[unlikely]] {
-        ++NaN_counts [Thread_id];
-        continue;
-      }
-    }
-
-    Unsigned_t Unsigned_value = std::bit_cast<Unsigned_t>(Key);
-
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        Unsigned_value ^= ((Unsigned_value >> Radix_cp::Shift_of_sign_bit) == 0)
-            ? Radix_cp::Sign_bit_mask
-            : Radix_cp::All_bits_mask;
-      } else {
-        if (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-          Unsigned_value ^= Radix_cp::All_bits_mask;
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      Unsigned_value ^= Radix_cp::Sign_bit_mask;
-    }
-
-    std::uint16_t Byte_idx =
-        (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-        Radix_cp::Mask;
-
-    if constexpr (Radix_tp.Order == SortOrder::Descending)
-      Byte_idx = Radix_cp::Mask - Byte_idx;
-
-    ++Bucket_counts [Byte_idx];
-  }
+  return Opts_;
 }
 
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_distribute_to_buckets(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, Value_t* __restrict Src,
-    Value_t* __restrict Dst, Size_t* Scanned_offsets,
-    const Key_extractor_t& Extractor, [[maybe_unused]] Size_t Thread_NaN_offset)
+template<typename Exec_policy_>
+concept Supported_execution_policy_ =
+    std::same_as<std::decay_t<Exec_policy_>, std::execution::sequenced_policy> ||
+    std::same_as<std::decay_t<Exec_policy_>, std::execution::parallel_policy> ||
+    std::same_as<std::decay_t<Exec_policy_>, std::execution::unsequenced_policy> ||
+    std::same_as<std::decay_t<Exec_policy_>, std::execution::parallel_unsequenced_policy>;
+
+template<typename Exec_policy_>
+inline constexpr bool Is_parallel_policy_v_ =
+    std::same_as<std::decay_t<Exec_policy_>, std::execution::parallel_policy> ||
+    std::same_as<std::decay_t<Exec_policy_>, std::execution::parallel_unsequenced_policy>;
+
+template<typename Alloc_>
+concept Standard_allocator_ = requires (Alloc_ A_, typename Alloc_::value_type *P_, std::size_t N_) {
+  typename Alloc_::value_type;
+
+  std::is_default_constructible_v<Alloc_>;
+  std::is_copy_constructible_v<Alloc_>;
+  std::is_move_constructible_v<Alloc_>;
+
+  { A_.allocate(N_) } -> std::same_as<typename Alloc_::value_type *>;
+
+  { A_.deallocate(P_, N_) } -> std::same_as<void>;
+
+  { A_ == A_ } -> std::convertible_to<bool>;
+  { A_ != A_ } -> std::convertible_to<bool>;
+};
+
+template<typename Func_, typename Ty_>
+concept Invocable_key_function_ = std::invocable<Func_, Ty_ const &> && !std::invocable<Func_>;
+
+template<typename Iter_>
+concept Random_access_iterator_ = std::random_access_iterator<Iter_>;
+
+template<typename>
+struct Is_reverse_iterator_ : std::false_type
 {
-  using Key_t      = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
+};
 
-  LOOP_UNROLL(8) for (Size_t Idx = Start_idx; Idx < End_idx; ++Idx)
+template<typename Iter_>
+struct Is_reverse_iterator_<std::reverse_iterator<Iter_>> : std::true_type
+{
+};
+
+template<typename Iter_>
+inline constexpr bool Is_reverse_iterator_v_ = Is_reverse_iterator_<Iter_>::value;
+
+template<typename Iter_>
+concept Reverse_iterator_ = Is_reverse_iterator_v_<Iter_>;
+
+struct Max_partition_result_
+{
+  size_t Part_index_;
+  size_t Max_val_;
+};
+
+//< Only applies to floating-point numbers,
+//< while dividing according to NaN, find the maximum based on the projection.
+//
+//< Proj_func_.Get_key_value_() return floating-point
+//< Proj_func_()                return projection, type is size_t
+template<Random_access_iterator_ Random_iter_, typename Predicate_, typename Proj_functor_>
+inline Max_partition_result_
+Max_while_partition_(Random_iter_         Begin_,
+                     Random_iter_         End_,
+                     Predicate_ const    &Pred_,
+                     Proj_functor_ const &Proj_func_) noexcept
+{
+  size_t Max_val_ = 0;
+
+  auto First_ = Begin_, Last_ = End_;
+
+  for (;;)
   {
-    auto& Value = Src [Idx];
-    auto  Key   = Extractor(Value);
+    for (;;)
+    {
+      if (First_ == Last_)
+      {
+        return { static_cast<size_t>(std::distance(Begin_, First_)), Max_val_ };
+      }
 
-    if constexpr (std::is_floating_point_v<Key_t> && Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      if (std::isnan(Key)) [[unlikely]] {
-        if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-          Dst [--Thread_NaN_offset] = std::move(Value);
-        } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-          Dst [Thread_NaN_offset++] = std::move(Value);
+      if (!Pred_(*First_))
+      {
+        break;
+      }
+
+      if (!std::isnan(Proj_func_.Get_key_value_(*First_)))
+      {
+        if (auto const Curr_val_ = Proj_func_(*First_); Curr_val_ > Max_val_)
+        {
+          Max_val_ = Curr_val_;
         }
-        continue;
       }
+
+      ++First_;
     }
 
-    Unsigned_t Unsigned_value = std::bit_cast<Unsigned_t>(Key);
+    do
+    {
+      --Last_;
 
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        Unsigned_value ^= ((Unsigned_value >> Radix_cp::Shift_of_sign_bit) == 0)
-            ? Radix_cp::Sign_bit_mask
-            : Radix_cp::All_bits_mask;
-      } else {
-        if (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-          Unsigned_value ^= Radix_cp::All_bits_mask;
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      Unsigned_value ^= Radix_cp::Sign_bit_mask;
-    }
-
-    std::uint16_t Byte_idx =
-        (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-        Radix_cp::Mask;
-
-    if constexpr (Radix_tp.Order == SortOrder::Descending)
-      Byte_idx = Radix_cp::Mask - Byte_idx;
-    Dst [Scanned_offsets [Byte_idx]++] = std::move(Value);
-  }
-}
-
-template<typename T>
-struct SIMD_type_traits;
-
-#if defined(__AVX2__) || defined(__AVX__)
-template<>
-struct SIMD_type_traits<std::uint32_t>
-{
-  static constexpr bool Is_32bit = true;
-  using Simd_vec_t               = __m256i;
-
-  static Simd_vec_t set1(std::uint32_t val) { return _mm256_set1_epi32(val); }
-
-  static Simd_vec_t srli(Simd_vec_t vec, int shift)
-  {
-    return _mm256_srli_epi32(vec, shift);
-  }
-
-  static Simd_vec_t xor_si(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_xor_si256(a, b);
-  }
-
-  static Simd_vec_t and_si(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_and_si256(a, b);
-  }
-
-  static Simd_vec_t cmpeq(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_cmpeq_epi32(a, b);
-  }
-
-  static Simd_vec_t blendv(Simd_vec_t a, Simd_vec_t b, Simd_vec_t mask)
-  {
-    return _mm256_blendv_epi8(a, b, mask);
-  }
-
-  static Simd_vec_t sub_epi(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_sub_epi32(a, b);
-  }
-};
-
-template<>
-struct SIMD_type_traits<std::uint64_t>
-{
-  static constexpr bool Is_32bit = false;
-  using Simd_vec_t               = __m256i;
-
-  static Simd_vec_t set1(std::uint64_t val) { return _mm256_set1_epi64x(val); }
-
-  static Simd_vec_t srli(Simd_vec_t vec, int shift)
-  {
-    return _mm256_srli_epi64(vec, shift);
-  }
-
-  static Simd_vec_t xor_si(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_xor_si256(a, b);
-  }
-
-  static Simd_vec_t and_si(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_and_si256(a, b);
-  }
-
-  static Simd_vec_t cmpeq(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_cmpeq_epi64(a, b);
-  }
-
-  static Simd_vec_t blendv(Simd_vec_t a, Simd_vec_t b, Simd_vec_t mask)
-  {
-    return _mm256_blendv_epi8(a, b, mask);
-  }
-
-  static Simd_vec_t sub_epi(Simd_vec_t a, Simd_vec_t b)
-  {
-    return _mm256_sub_epi64(a, b);
-  }
-};
-
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_count_buckets_avx2_impl(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, const Value_t* __restrict Src,
-    Size_t* Bucket_counts, const Key_extractor_t& Extractor,
-    [[maybe_unused]] Size_t* NaN_counts, [[maybe_unused]] int Thread_id)
-{
-  using Key_t      = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-  using SIMDTraits = SIMD_type_traits<Unsigned_t>;
-  using Simd_vec_t = typename SIMDTraits::Simd_vec_t;
-
-  constexpr Size_t simd_width = sizeof(__m256i) / sizeof(Unsigned_t);
-  Size_t simd_end = Start_idx + ((End_idx - Start_idx) / simd_width) * simd_width;
-
-  Simd_vec_t mask = SIMDTraits::set1(static_cast<Unsigned_t>(Radix_cp::Mask));
-  Simd_vec_t sign_bit_mask = SIMDTraits::set1(Radix_cp::Sign_bit_mask);
-  Simd_vec_t all_bits_mask = SIMDTraits::set1(Radix_cp::All_bits_mask);
-  Simd_vec_t zero_vec      = SIMDTraits::set1(0);
-
-  for (Size_t Idx = Start_idx; Idx < simd_end; Idx += simd_width) {
-    Simd_vec_t keys;
-    bool       is_nan [simd_width] = { false };
-
-    if constexpr (std::is_same_v<Value_t, Key_t>) {
-      keys = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(Src + Idx));
-    } else {
-      alignas(32) Unsigned_t keys_arr [simd_width];
-      if constexpr (Is_last_pass &&
-                    Radix_tp.NaN_position != NaNPosition::Unhandled) {
-        for (Size_t i = 0; i < simd_width; ++i) {
-          auto Key = Extractor(Src [Idx + i]);
-          if (std::isnan(Key)) [[unlikely]] {
-            ++NaN_counts [Thread_id];
-            is_nan [i]   = true;
-            keys_arr [i] = 0;
-          } else {
-            keys_arr [i] = std::bit_cast<Unsigned_t>(Key);
+      if (First_ == Last_)
+      {
+        if (!std::isnan(Proj_func_.Get_key_value_(*First_)))
+        {
+          if (auto const Curr_val_ = Proj_func_(*First_); Curr_val_ > Max_val_)
+          {
+            Max_val_ = Curr_val_;
           }
         }
-      } else {
-        for (Size_t i = 0; i < simd_width; ++i) {
-          keys_arr [i] = std::bit_cast<Unsigned_t>(Extractor(Src [Idx + i]));
-        }
+        return { static_cast<size_t>(std::distance(Begin_, First_)), Max_val_ };
       }
-      keys = _mm256_load_si256(reinterpret_cast<const __m256i*>(keys_arr));
     }
+    while (!Pred_(*Last_));
 
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (!Is_last_pass) {
-        Simd_vec_t sign_bits   = SIMDTraits::and_si(keys, sign_bit_mask);
-        Simd_vec_t is_negative = SIMDTraits::cmpeq(sign_bits, sign_bit_mask);
-        Simd_vec_t xor_mask =
-            SIMDTraits::blendv(SIMDTraits::set1(0), all_bits_mask, is_negative);
-        keys = SIMDTraits::xor_si(keys, xor_mask);
-      } else if constexpr (Is_last_pass) {
-        alignas(32) Unsigned_t keys_arr [simd_width];
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(keys_arr), keys);
-
-        for (Size_t i = 0; i < simd_width; ++i) {
-          if (is_nan [i]) continue;
-          keys_arr [i] ^= ((keys_arr [i] >> Radix_cp::Shift_of_sign_bit) == 0)
-              ? Radix_cp::Sign_bit_mask
-              : Radix_cp::All_bits_mask;
-        }
-
-        keys = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(keys_arr));
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      keys = SIMDTraits::xor_si(keys, sign_bit_mask);
-    }
-
-    const int shift_amount =
-        static_cast<int>(Pass << Radix_cp::Shift_of_byte_idx);
-    Simd_vec_t shifted      = SIMDTraits::srli(keys, shift_amount);
-    Simd_vec_t byte_indices = SIMDTraits::and_si(shifted, mask);
-
-    if constexpr (Radix_tp.Order == SortOrder::Descending) {
-      byte_indices = SIMDTraits::sub_epi(mask, byte_indices);
-    }
-
-    alignas(32) Unsigned_t indices [simd_width];
-    _mm256_storeu_si256(reinterpret_cast<__m256i*>(indices), byte_indices);
-
-    for (Size_t i = 0; i < simd_width; ++i) {
-      if (is_nan [i]) continue;
-      ++Bucket_counts [indices [i]];
-    }
-  }
-
-  for (Size_t Idx = simd_end; Idx < End_idx; ++Idx) {
-    auto       Key            = Extractor(Src [Idx]);
-    Unsigned_t Unsigned_value = std::bit_cast<Unsigned_t>(Key);
-
-    if constexpr (Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      if (std::isnan(Key)) [[unlikely]] {
-        ++NaN_counts [Thread_id];
-        continue;
+    if (!std::isnan(Proj_func_.Get_key_value_(*First_)))
+    {
+      if (auto const Curr_val_ = Proj_func_(*First_); Curr_val_ > Max_val_)
+      {
+        Max_val_ = Curr_val_;
       }
     }
 
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        Unsigned_value ^= ((Unsigned_value >> Radix_cp::Shift_of_sign_bit) == 0)
-            ? Radix_cp::Sign_bit_mask
-            : Radix_cp::All_bits_mask;
-      } else {
-        if (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-          Unsigned_value ^= Radix_cp::All_bits_mask;
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      Unsigned_value ^= Radix_cp::Sign_bit_mask;
-    }
+    std::iter_swap(First_, Last_);
 
-    std::uint16_t Byte_idx =
-        (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-        Radix_cp::Mask;
-    if constexpr (Radix_tp.Order == SortOrder::Descending)
-      Byte_idx = Radix_cp::Mask - Byte_idx;
-    ++Bucket_counts [Byte_idx];
+    ++First_;
   }
 }
 
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_distribute_to_buckets_avx2_impl(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, Value_t* __restrict Src,
-    Value_t* __restrict Dst, Size_t* Scanned_offsets,
-    const Key_extractor_t& Extractor, [[maybe_unused]] Size_t Thread_NaN_offset)
+template<bool Is_parallel_, uint32_t Loop_N_, typename Random_point_, typename Proj_functor_>
+inline size_t
+Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_) noexcept
 {
-  using Key_t      = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-  using SIMDTraits = SIMD_type_traits<Unsigned_t>;
-  using Simd_vec_t = typename SIMDTraits::Simd_vec_t;
+  size_t Max_val_ = 0;
 
-  constexpr Size_t simd_width = sizeof(__m256i) / sizeof(Unsigned_t);
-  Size_t simd_end = Start_idx + ((End_idx - Start_idx) / simd_width) * simd_width;
+  if constexpr (Is_parallel_)
+  {
+    int Actual_threads_ = omp_get_num_procs();
+#if defined(_MSC_VER) && !defined(_OPENMP_LLVM_RUNTIME)
+#  pragma omp parallel num_threads(Actual_threads_)
+    {
+      auto Local_val_ = Max_val_;
 
-  Simd_vec_t mask = SIMDTraits::set1(static_cast<Unsigned_t>(Radix_cp::Mask));
-  Simd_vec_t sign_bit_mask = SIMDTraits::set1(Radix_cp::Sign_bit_mask);
-  Simd_vec_t all_bits_mask = SIMDTraits::set1(Radix_cp::All_bits_mask);
-  Simd_vec_t zero_vec      = SIMDTraits::set1(0);
-
-  for (Size_t Idx = Start_idx; Idx < simd_end; Idx += simd_width) {
-    Simd_vec_t          keys;
-    alignas(32) Value_t values [simd_width];
-    bool                is_nan [simd_width] = { false };
-
-    if constexpr (std::is_same_v<Value_t, Key_t>) {
-      keys = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(Src + Idx));
-      for (Size_t i = 0; i < simd_width; ++i) {
-        values [i] = Src [Idx + i];
+      // openmp 2.0 does not support "reduction(max : ?)" and loop index must be signed
+#  pragma omp for nowait
+      for (int64_t Index_ = 0; Index_ < Size_; ++Index_)
+      {
+        if (auto const Current_val_ = Proj_func_(Begin_[Index_]); Current_val_ > Local_val_)
+        {
+          Local_val_ = Current_val_;
+        }
       }
-    } else {
-      alignas(32) Unsigned_t keys_arr [simd_width];
-      for (Size_t i = 0; i < simd_width; ++i) {
-        values [i]   = Src [Idx + i];
-        keys_arr [i] = std::bit_cast<Unsigned_t>(Extractor(values [i]));
-      }
-      keys = _mm256_load_si256(reinterpret_cast<const __m256i*>(keys_arr));
-    }
 
-    if constexpr (std::is_floating_point_v<Key_t> && Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      for (Size_t i = 0; i < simd_width; ++i) {
-        auto Key = Extractor(values [i]);
-        if (std::isnan(Key)) [[unlikely]] {
-          is_nan [i] = true;
-          if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-            Dst [--Thread_NaN_offset] = std::move(values [i]);
-          } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-            Dst [Thread_NaN_offset++] = std::move(values [i]);
-          }
+#  pragma omp critical
+      {
+        if (Local_val_ > Max_val_)
+        {
+          Max_val_ = Local_val_;
         }
       }
     }
-
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        alignas(32) Unsigned_t keys_arr [simd_width];
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(keys_arr), keys);
-
-        for (Size_t i = 0; i < simd_width; ++i) {
-          if (is_nan [i]) continue;
-          keys_arr [i] ^= ((keys_arr [i] >> Radix_cp::Shift_of_sign_bit) == 0)
-              ? Radix_cp::Sign_bit_mask
-              : Radix_cp::All_bits_mask;
-        }
-
-        keys = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(keys_arr));
-      } else {
-        Simd_vec_t sign_bits   = SIMDTraits::and_si(keys, sign_bit_mask);
-        Simd_vec_t is_negative = SIMDTraits::cmpeq(sign_bits, sign_bit_mask);
-        Simd_vec_t xor_mask =
-            SIMDTraits::blendv(SIMDTraits::set1(0), all_bits_mask, is_negative);
-        keys = SIMDTraits::xor_si(keys, xor_mask);
+#else /* GNU, Clang, MSVC(/openmp:llvm) */
+#  pragma omp parallel for reduction(max : Max_val_) num_threads(Actual_threads_)
+    for (size_t Index_ = 0; Index_ < Size_; ++Index_)
+    {
+      if (auto const Current_val_ = Proj_func_(Begin_[Index_]); Current_val_ > Max_val_)
+      {
+        Max_val_ = Current_val_;
       }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      keys = SIMDTraits::xor_si(keys, sign_bit_mask);
     }
+#endif
+  }
+  else
+  {
+#if defined(_MSC_VER) && !defined(_OPENMP_LLVM_RUNTIME)
 
-    const int shift_amount =
-        static_cast<int>(Pass << Radix_cp::Shift_of_byte_idx);
-    ;
-    Simd_vec_t shifted      = SIMDTraits::srli(keys, shift_amount);
-    Simd_vec_t byte_indices = SIMDTraits::and_si(shifted, mask);
-
-    if constexpr (Radix_tp.Order == SortOrder::Descending) {
-      byte_indices = SIMDTraits::sub_epi(mask, byte_indices);
+    Unroll_loop_<Loop_N_>(0, Size_, [&](size_t Index_)
+    {
+      if (auto const Val_ = Proj_func_(Begin_[Index_]); Val_ > Max_val_)
+      {
+        Max_val_ = Val_;
+      }
+    });
+#else
+#  pragma omp simd reduction(max : Max_val_)
+    for (size_t Index_ = 0; Index_ < Size_; ++Index_)
+    {
+      if (auto const Val_ = Proj_func_(Begin_[Index_]); Val_ > Max_val_)
+      {
+        Max_val_ = Val_;
+      }
     }
+#endif
+  }
 
-    alignas(32) Unsigned_t indices [simd_width];
-    _mm256_storeu_si256(reinterpret_cast<__m256i*>(indices), byte_indices);
+  return Max_val_;
+}
 
-    for (Size_t i = 0; i < simd_width; ++i) {
-      if (is_nan [i]) continue;
-      Dst [Scanned_offsets [indices [i]]++] = std::move(values [i]);
+//< Allocate and construct a buffer
+template<typename Allocator_>
+ALWAYS_INLINE typename ::std::allocator_traits<Allocator_>::pointer
+Construct_buffer_(size_t N_, Allocator_ &Alloc_)
+{
+  using Traits_     = ::std::allocator_traits<Allocator_>;
+  using Value_type_ = typename Allocator_::value_type;
+  using Pointer_    = typename Traits_::pointer;
+
+  Pointer_ const P_ = Alloc_.allocate(N_);
+
+  //< If the objects being sorted have trivial default initialization, they do not need to be
+  //< initialized here. This can benefit performance.
+  if (!::std::is_trivially_default_constructible_v<Value_type_>)
+  {
+    for (size_t I_ = 0; I_ < N_; ++I_)
+    {
+      //< Objects being sorted must be default-initializable
+      Traits_::construct(Alloc_, P_ + I_);
     }
   }
 
-  for (Size_t Idx = simd_end; Idx < End_idx; ++Idx) {
-    auto&      Value          = Src [Idx];
-    auto       Key            = Extractor(Value);
-    Unsigned_t Unsigned_value = std::bit_cast<Unsigned_t>(Key);
+  return P_;
+}
 
-    if constexpr (std::is_floating_point_v<Key_t> && Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      if (std::isnan(Key)) [[unlikely]] {
-        if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-          Dst [--Thread_NaN_offset] = std::move(Value);
-        } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-          Dst [Thread_NaN_offset++] = std::move(Value);
-        }
-        continue;
-      }
+//< Destroy and deallocate a buffer
+template<typename Allocator_>
+ALWAYS_INLINE void
+Destroy_buffer_(typename ::std::allocator_traits<Allocator_>::pointer P_, size_t N_, Allocator_ &Alloc_) noexcept
+{
+  using Traits_ = ::std::allocator_traits<Allocator_>;
+
+  //< If the objects being sorted have trivial destruction, they do not need to be
+  //< destroyed here. This can benefit performance.
+  if (!::std::is_trivially_destructible_v<typename Allocator_::value_type>)
+  {
+    for (size_t I_ = 0; I_ < N_; ++I_)
+    {
+      Traits_::destroy(Alloc_, P_ + I_);
+    }
+  }
+
+  Alloc_.deallocate(P_, N_);
+}
+
+template<typename Allocator_>
+class AllocatedBufferHolder_
+{
+public:
+  AllocatedBufferHolder_()
+      : M_size_(0)
+      , M_alloc_()
+      , M_buffer_(nullptr)
+  {
+  }
+
+  AllocatedBufferHolder_(size_t Size_, Allocator_ const &Alloc_)
+      : M_size_(Size_)
+      , M_alloc_(Alloc_)
+      , M_buffer_(Construct_buffer_(Size_, M_alloc_))
+  {
+  }
+
+  ~AllocatedBufferHolder_() { Destroy_buffer_(M_buffer_, M_size_, M_alloc_); }
+
+  void Allocate_(size_t Size_, Allocator_ const &Alloc_)
+  {
+    if (M_buffer_ != nullptr && M_size_ != 0)
+    {
+      Destroy_buffer_(M_buffer_, M_size_, M_alloc_);
+      M_buffer_ = nullptr;
+      M_size_   = 0;
     }
 
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        Unsigned_value ^= ((Unsigned_value >> Radix_cp::Shift_of_sign_bit) == 0)
-            ? Radix_cp::Sign_bit_mask
-            : Radix_cp::All_bits_mask;
-      } else {
-        if (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-          Unsigned_value ^= Radix_cp::All_bits_mask;
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      Unsigned_value ^= Radix_cp::Sign_bit_mask;
+    if (Size_ == 0)
+    {
+      M_alloc_ = Alloc_;
+      return;
     }
 
-    std::uint16_t Byte_idx =
-        (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-        Radix_cp::Mask;
-    if constexpr (Radix_tp.Order == SortOrder::Descending)
-      Byte_idx = Radix_cp::Mask - Byte_idx;
-    Dst [Scanned_offsets [Byte_idx]++] = std::move(Value);
+    M_size_   = Size_;
+    M_alloc_  = Alloc_;
+    M_buffer_ = Construct_buffer_(M_size_, M_alloc_);
+  }
+
+  typename std::allocator_traits<Allocator_>::pointer Get_buffer_() { return M_buffer_; }
+
+private:
+  size_t                                              M_size_;
+  Allocator_                                          M_alloc_;
+  typename std::allocator_traits<Allocator_>::pointer M_buffer_;
+};
+
+enum class Unroll_loop_direction_
+{
+  Increasing_,
+  Decreasing_
+};
+
+template<size_t Unroll_size_, typename Function_>
+ALWAYS_INLINE void
+Unrolled_call_(size_t Base_, Function_ const &Func_) noexcept
+{
+  [&]<size_t... Is_>(std::index_sequence<Is_...>)
+  {
+    (Func_(Base_ + Is_), ...);
+  }.template operator() (std::make_index_sequence<Unroll_size_> {});
+}
+
+template<size_t Unroll_size_, typename Function_>
+ALWAYS_INLINE void
+Unroll_loop_(size_t Start_, size_t End_, Function_ const &Func_) noexcept
+{
+  static_assert((Unroll_size_ & (Unroll_size_ - 1)) == 0, "Unroll size must be a power of two");
+
+  size_t Index_ { Start_ };
+
+  for (; Unroll_size_ <= End_ - Index_; Index_ += Unroll_size_)
+  {
+    // Unrolled_call_<Unroll_size_>(Index_, Func_);
+    for (size_t Roll_ = 0; Roll_ < Unroll_size_; ++Roll_)
+    {
+      Func_(Index_ + Roll_);
+    }
+  }
+
+  for (; Index_ < End_; ++Index_)
+  {
+    Func_(Index_);
   }
 }
-#elif defined(__ARM_NEON) || defined(__aarch64__)
-template<>
-struct SIMD_type_traits<std::uint32_t>
+
+struct Radix_projection_functor_tag_
 {
-  static constexpr bool Is_32bit = true;
-  using Simd_vec_t               = uint32x4_t;
+};
 
-  static Simd_vec_t set1(std::uint32_t val) { return vdupq_n_u32(val); }
+template<typename Ty_>
+concept Radix_projection_tag_ = std::is_void_v<Ty_> || std::derived_from<Ty_, Radix_projection_functor_tag_>;
 
-  static Simd_vec_t srli(Simd_vec_t vec, int shift)
+struct Radix_projection_functor_default_tag_ : Radix_projection_functor_tag_
+{
+};
+
+struct Radix_projection_functor_signed_integral_xor_tag_ : Radix_projection_functor_tag_
+{
+};
+
+struct Radix_projection_functor_float_point_bitwise_not_tag_ : Radix_projection_functor_tag_
+{
+};
+
+inline constexpr Radix_projection_functor_default_tag_                 Radix_default_tag_ {};
+inline constexpr Radix_projection_functor_signed_integral_xor_tag_     Radix_int_xor_tag_ {};
+inline constexpr Radix_projection_functor_float_point_bitwise_not_tag_ Radix_float_bitwise_not_tag_ {};
+
+template<typename Key_function_, typename Ty_>
+struct Radix_projection_functor_
+{
+  static_assert(
+      Invocable_key_function_<Key_function_, Ty_>,
+      "Key_function_ must be callable with exactly one required argument of type Ty_, const Ty_, or const Ty_&. "
+      "Additional arguments must have default values.");
+
+  using Key_ty_      = std::remove_cvref_t<std::invoke_result_t<Key_function_, Ty_>>;
+  using Unsigned_ty_ = std::make_unsigned_t<
+      std::conditional_t<std::is_floating_point_v<Key_ty_>,
+                         std::conditional_t<std::same_as<Key_ty_, float>, std::uint32_t, std::uint64_t>,
+                         Key_ty_>>;
+  static constexpr std::uint8_t Shift_of_sign_bit_ = sizeof(Key_ty_) * 8 - 1;
+  static constexpr Unsigned_ty_ All_bit_mask_      = ~Unsigned_ty_ { 0 };
+  static constexpr Unsigned_ty_ Sign_bit_mask_     = All_bit_mask_ << Shift_of_sign_bit_;
+
+  static_assert(std::is_arithmetic_v<Key_ty_>, "Type must be arithmetic (integral or floating-point)!");
+  //< Does not support types like __int128, which are larger than size_t
+  static_assert((sizeof(Key_ty_) <= sizeof(size_t)), "Type size is bigger than size_t size.");
+
+  Key_function_ F_;
+
+  constexpr Key_ty_ Get_key_value_(Ty_ const &Val_) const noexcept { return F_(Val_); }
+
+  constexpr size_t operator() (Ty_ const &Val_) const noexcept
   {
-    return vshrq_n_u32(vec, shift);
+    return this->operator() (Radix_default_tag_, Get_key_value_(Val_));
   }
 
-  static Simd_vec_t xor_si(Simd_vec_t a, Simd_vec_t b) { return veorq_u32(a, b); }
-
-  static Simd_vec_t and_si(Simd_vec_t a, Simd_vec_t b) { return vandq_u32(a, b); }
-
-  static Simd_vec_t cmpeq(Simd_vec_t a, Simd_vec_t b) { return vceqq_u32(a, b); }
-
-  static Simd_vec_t blendv(Simd_vec_t a, Simd_vec_t b, Simd_vec_t mask)
+  constexpr size_t operator() (Radix_projection_functor_default_tag_, Key_ty_ Val_) const noexcept
   {
-    return vbslq_u32(mask, b, a);
+    if constexpr (std::unsigned_integral<Key_ty_>)
+    {
+      return Val_;
+    }
+    else if constexpr (std::signed_integral<Key_ty_>)
+    {
+      //< The default function needs to take the signed integer-like representation and map it to an unsigned one. The
+      //< following code will take the midpoint of the unsigned representable range (SIZE_MAX/2)+1 and does an unsigned
+      //< add of the value. Thus, it maps a [-signed_min,+signed_max] range into a [0, unsigned_max] range.
+      return ((std::numeric_limits<size_t>::max() / 2) + 1) + static_cast<size_t>(Val_);
+
+      //< Another strategy "return static_cast<Unsigned_ty_>(Val_) ^ Sign_bit_mask_;"
+      //<
+      //< if only LSD sorting is used, only the highest significant bit needs to be processed.
+      //< Currently, a mixed strategy of MSD and LSD is adopted, using the above scheme applied to the function-Radix_key.
+    }
+    else /* std::floating_point<Key_ty_> */
+    {
+      Unsigned_ty_ const Unsigned_val_ = std::bit_cast<Unsigned_ty_>(Val_);
+
+      //< NaN cannot be compared, so we do not use >=, but instead use shifting
+      //< return ((Unsigned_val_ >> Shift_of_sign_bit_) == 0) ? Unsigned_val_ | Sign_bit_mask_ : ~Unsigned_val_;
+
+      Unsigned_ty_ const Mask_ = (Unsigned_ty_(0) - (Unsigned_val_ >> Shift_of_sign_bit_));
+
+      return (Unsigned_val_ ^ Mask_) | (Sign_bit_mask_ & ~Mask_);
+    }
   }
 
-  static Simd_vec_t sub_epi(Simd_vec_t a, Simd_vec_t b)
+  constexpr size_t operator() (Radix_projection_functor_signed_integral_xor_tag_, Key_ty_ Val_) const noexcept
   {
-    return vsubq_u32(a, b);
+    if constexpr (std::signed_integral<Key_ty_>)
+    {
+      return static_cast<Unsigned_ty_>(Val_) ^ Sign_bit_mask_;
+    }
+    else
+    {
+      return this->operator() (Radix_default_tag_, Val_);
+    }
+  }
+
+  constexpr size_t operator() (Radix_projection_functor_float_point_bitwise_not_tag_, Key_ty_ Val_) const noexcept
+  {
+    if constexpr (std::floating_point<Key_ty_>)
+    {
+      Unsigned_ty_ const Unsigned_val_ = std::bit_cast<Unsigned_ty_>(Val_);
+
+      return Unsigned_val_ ^ (Unsigned_ty_(0) - (Unsigned_val_ >> Shift_of_sign_bit_));
+    }
+    else
+    {
+      return this->operator() (Radix_default_tag_, Val_);
+    }
   }
 };
 
-template<>
-struct SIMD_type_traits<std::uint64_t>
+template<radix_options Radix_opts_, typename Unsigned_ty_>
+ALWAYS_INLINE size_t
+Radix_key_(Unsigned_ty_ Val_, size_t Radix_) noexcept
 {
-  static constexpr bool Is_32bit = false;
-  using Simd_vec_t               = uint64x2_t;
+  //< Mask (value 255 or 65535) and Shift (value 8 or 16) depends on the size of the bucket
+  constexpr uint16_t Mask_  = Radix_opts_.bucket_size - 1;
+  constexpr uint16_t Shift_ = Radix_opts_.bucket_size == 256U ? 8 : 16;
 
-  static Simd_vec_t set1(std::uint64_t val) { return vdupq_n_u64(val); }
-
-  static Simd_vec_t srli(Simd_vec_t vec, int shift)
+  if constexpr (Radix_opts_.sort_order == radix_sort_order::asc)
   {
-    return vshrq_n_u64(vec, shift);
+    return (Val_ >> Shift_ * Radix_) & Mask_;
   }
-
-  static Simd_vec_t xor_si(Simd_vec_t a, Simd_vec_t b) { return veorq_u64(a, b); }
-
-  static Simd_vec_t and_si(Simd_vec_t a, Simd_vec_t b) { return vandq_u64(a, b); }
-
-  static Simd_vec_t cmpeq(Simd_vec_t a, Simd_vec_t b) { return vceqq_u64(a, b); }
-
-  static Simd_vec_t blendv(Simd_vec_t a, Simd_vec_t b, Simd_vec_t mask)
+  else /* Radix_opts_.sort_order == radix_sort_order::desc */
   {
-    return vbslq_u64(mask, b, a);
+    return Mask_ - ((Val_ >> Shift_ * Radix_) & Mask_);
   }
+}
 
-  static Simd_vec_t sub_epi(Simd_vec_t a, Simd_vec_t b)
+template<Radix_projection_tag_ Tag_, radix_options Radix_opts_, typename Ty_, typename Proj_functor_>
+ALWAYS_INLINE size_t
+Radix_key_(Ty_ const &Val_, size_t Radix_, Proj_functor_ const &Proj_func_) noexcept
+{
+  return Radix_key_<Radix_opts_>(Proj_func_(Tag_ {}, Proj_func_.Get_key_value_(Val_)), Radix_);
+}
+
+template<radix_options Radix_opts_, typename Ty_, typename Proj_functor_>
+ALWAYS_INLINE size_t
+Radix_key_(Ty_ const &Val_, size_t Radix_, Proj_functor_ const &Proj_func_) noexcept
+{
+  return Radix_key_<Radix_projection_functor_default_tag_, Radix_opts_, Ty_, Proj_functor_>(Val_, Radix_, Proj_func_);
+}
+
+struct Radix_parallel_data_
+{
+  size_t Step_;
+  int    Remain_;
+  int    Threads_num_ { 1 };
+};
+
+ALWAYS_INLINE Radix_parallel_data_
+Radix_make_parallel_data_(size_t Size_, int Threads_num_) noexcept
+{
+  return Radix_parallel_data_ { .Step_        = Size_ / static_cast<size_t>(Threads_num_),
+                                .Remain_      = static_cast<int>(Size_ % static_cast<size_t>(Threads_num_)),
+                                .Threads_num_ = Threads_num_ };
+}
+
+template<radix_options Radix_opts_>
+struct Radix_chunk_context_
+{
+  using Chunk_ptr_ty_ = size_t (*)[Radix_opts_.bucket_size];
+
+  static constexpr size_t Stack_bucket_capacity_ = 1024;
+
+  //size_t                                         Stack_bucket_buffer_[Stack_bucket_capacity_];
+  AllocatedBufferHolder_<std::allocator<size_t>> Heap_bucket_holder_;
+  Chunk_ptr_ty_                                  Chunks_ { nullptr };
+  size_t                                         Buffer_size_ { 0 };
+  Radix_parallel_data_                           Paral_data_ {};
+
+  ALWAYS_INLINE void Init_(size_t Size_, int Threads_num_)
   {
-    return vsubq_u64(a, b);
+    Buffer_size_ = static_cast<size_t>(Radix_opts_.bucket_size) * static_cast<size_t>(Threads_num_);
+    Paral_data_  = Radix_make_parallel_data_(Size_, Threads_num_);
+
+    if (Buffer_size_ <= Stack_bucket_capacity_)
+    {
+      size_t *Stack_bucket_buffer_ = static_cast<size_t *>(alloca(Buffer_size_ * sizeof(size_t)));
+      Chunks_                      = reinterpret_cast<Chunk_ptr_ty_>(Stack_bucket_buffer_);
+    }
+    else
+    {
+      Heap_bucket_holder_.Allocate_(Buffer_size_, std::allocator<size_t> {});
+      Chunks_ = reinterpret_cast<Chunk_ptr_ty_>(Heap_bucket_holder_.Get_buffer_());
+    }
   }
 };
 
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_distribute_to_buckets_neon_impl(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, Value_t* __restrict Src,
-    Value_t* __restrict Dst, Size_t* Scanned_offsets,
-    const Key_extractor_t& Extractor, [[maybe_unused]] Size_t Thread_NaN_offset)
+ALWAYS_INLINE std::pair<size_t, size_t>
+              Radix_compute_task_indices_(size_t Thread_id_, size_t Step_, size_t Remain_) noexcept
 {
-  using Key_t      = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-  using SIMDTraits = SIMD_type_traits<Unsigned_t>;
-  using Simd_vec_t = typename SIMDTraits::Simd_vec_t;
+  size_t Beg_index_, End_index_;
 
-  constexpr Size_t simd_width = std::is_same_v<Unsigned_t, std::uint32_t> ? 4 : 2;
-  Size_t simd_end = Start_idx + ((End_idx - Start_idx) / simd_width) * simd_width;
-
-  Simd_vec_t mask = SIMDTraits::set1(static_cast<Unsigned_t>(Radix_cp::Mask));
-  Simd_vec_t sign_bit_mask = SIMDTraits::set1(Radix_cp::Sign_bit_mask);
-  Simd_vec_t all_bits_mask = SIMDTraits::set1(Radix_cp::All_bits_mask);
-
-  for (Size_t Idx = Start_idx; Idx < simd_end; Idx += simd_width) {
-    Simd_vec_t          keys;
-    alignas(16) Value_t values [simd_width];
-    bool                is_nan [simd_width] = { false };
-
-    if constexpr (std::is_same_v<Value_t, Key_t>) {
-      if constexpr (simd_width == 4) {
-        keys = vld1q_u32(reinterpret_cast<const uint32_t*>(Src + Idx));
-      } else {
-        keys = vld1q_u64(reinterpret_cast<const uint64_t*>(Src + Idx));
-      }
-      for (Size_t i = 0; i < simd_width; ++i) {
-        values [i] = Src [Idx + i];
-      }
-    } else {
-      alignas(16) Unsigned_t keys_arr [simd_width];
-      for (Size_t i = 0; i < simd_width; ++i) {
-        values [i]   = Src [Idx + i];
-        keys_arr [i] = std::bit_cast<Unsigned_t>(Extractor(values [i]));
-      }
-      if constexpr (simd_width == 4) {
-        keys = vld1q_u32(keys_arr);
-      } else {
-        keys = vld1q_u64(keys_arr);
-      }
-    }
-
-    if constexpr (std::is_floating_point_v<Key_t> && Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      for (Size_t i = 0; i < simd_width; ++i) {
-        auto Key = Extractor(values [i]);
-        if (std::isnan(Key)) [[unlikely]] {
-          is_nan [i] = true;
-          if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-            Dst [--Thread_NaN_offset] = std::move(values [i]);
-          } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-            Dst [Thread_NaN_offset++] = std::move(values [i]);
-          }
-        }
-      }
-    }
-
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        alignas(16) Unsigned_t keys_arr [simd_width];
-        if constexpr (simd_width == 4) {
-          vst1q_u32(keys_arr, keys);
-        } else {
-          vst1q_u64(keys_arr, keys);
-        }
-
-        for (Size_t i = 0; i < simd_width; ++i) {
-          if (is_nan [i]) continue;
-          keys_arr [i] ^= ((keys_arr [i] >> Radix_cp::Shift_of_sign_bit) == 0)
-              ? Radix_cp::Sign_bit_mask
-              : Radix_cp::All_bits_mask;
-        }
-
-        if constexpr (simd_width == 4) {
-          keys = vld1q_u32(keys_arr);
-        } else {
-          keys = vld1q_u64(keys_arr);
-        }
-      } else {
-        Simd_vec_t sign_bits   = SIMDTraits::and_si(keys, sign_bit_mask);
-        Simd_vec_t is_negative = SIMDTraits::cmpeq(sign_bits, sign_bit_mask);
-        Simd_vec_t xor_mask =
-            SIMDTraits::blendv(SIMDTraits::set1(0), all_bits_mask, is_negative);
-        keys = SIMDTraits::xor_si(keys, xor_mask);
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      keys = SIMDTraits::xor_si(keys, sign_bit_mask);
-    }
-
-    const int shift_amount =
-        static_cast<int>(Pass << Radix_cp::Shift_of_byte_idx);
-    Simd_vec_t shifted      = SIMDTraits::srli(keys, shift_amount);
-    Simd_vec_t byte_indices = SIMDTraits::and_si(shifted, mask);
-
-    if constexpr (Radix_tp.Order == SortOrder::Descending) {
-      byte_indices = SIMDTraits::sub_epi(mask, byte_indices);
-    }
-
-    alignas(16) Unsigned_t indices [simd_width];
-    if constexpr (simd_width == 4) {
-      vst1q_u32(indices, byte_indices);
-    } else {
-      vst1q_u64(indices, byte_indices);
-    }
-
-    for (Size_t i = 0; i < simd_width; ++i) {
-      if (is_nan [i]) continue;
-      Dst [Scanned_offsets [indices [i]]++] = std::move(values [i]);
-    }
-  }
-
-  for (Size_t Idx = simd_end; Idx < End_idx; ++Idx) {
-    auto&      Value          = Src [Idx];
-    auto       Key            = Extractor(Value);
-    Unsigned_t Unsigned_value = std::bit_cast<Unsigned_t>(Key);
-
-    if constexpr (std::is_floating_point_v<Key_t> && Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      if (std::isnan(Key)) [[unlikely]] {
-        if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-          Dst [--Thread_NaN_offset] = std::move(Value);
-        } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-          Dst [Thread_NaN_offset++] = std::move(Value);
-        }
-        continue;
-      }
-    }
-
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        Unsigned_value ^= ((Unsigned_value >> Radix_cp::Shift_of_sign_bit) == 0)
-            ? Radix_cp::Sign_bit_mask
-            : Radix_cp::All_bits_mask;
-      } else {
-        if (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-          Unsigned_value ^= Radix_cp::All_bits_mask;
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      Unsigned_value ^= Radix_cp::Sign_bit_mask;
-    }
-
-    std::uint16_t Byte_idx =
-        (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-        Radix_cp::Mask;
-    if constexpr (Radix_tp.Order == SortOrder::Descending)
-      Byte_idx = Radix_cp::Mask - Byte_idx;
-    Dst [Scanned_offsets [Byte_idx]++] = std::move(Value);
-  }
-}
-
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_count_buckets_neon_impl(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, const Value_t* __restrict Src,
-    Size_t* Bucket_counts, const Key_extractor_t& Extractor,
-    [[maybe_unused]] Size_t* NaN_counts, [[maybe_unused]] int Thread_id)
-{
-  using Key_t      = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-  using SIMDTraits = SIMD_type_traits<Unsigned_t>;
-  using Simd_vec_t = typename SIMDTraits::Simd_vec_t;
-
-  constexpr Size_t simd_width = std::is_same_v<Unsigned_t, std::uint32_t> ? 4 : 2;
-  Size_t simd_end = Start_idx + ((End_idx - Start_idx) / simd_width) * simd_width;
-
-  Simd_vec_t mask = SIMDTraits::set1(static_cast<Unsigned_t>(Radix_cp::Mask));
-  Simd_vec_t sign_bit_mask = SIMDTraits::set1(Radix_cp::Sign_bit_mask);
-  Simd_vec_t all_bits_mask = SIMDTraits::set1(Radix_cp::All_bits_mask);
-
-  for (Size_t Idx = Start_idx; Idx < simd_end; Idx += simd_width) {
-    Simd_vec_t keys;
-    bool       is_nan [simd_width] = { false };
-
-    if constexpr (std::is_same_v<Value_t, Key_t>) {
-      if constexpr (simd_width == 4) {
-        keys = vld1q_u32(reinterpret_cast<const uint32_t*>(Src + Idx));
-      } else {
-        keys = vld1q_u64(reinterpret_cast<const uint64_t*>(Src + Idx));
-      }
-    } else {
-      alignas(16) Unsigned_t keys_arr [simd_width];
-      if constexpr (Is_last_pass &&
-                    Radix_tp.NaN_position != NaNPosition::Unhandled) {
-        for (Size_t i = 0; i < simd_width; ++i) {
-          auto Key = Extractor(Src [Idx + i]);
-          if (std::isnan(Key)) [[unlikely]] {
-            ++NaN_counts [Thread_id];
-            is_nan [i]   = true;
-            keys_arr [i] = 0;
-          } else {
-            keys_arr [i] = std::bit_cast<Unsigned_t>(Key);
-          }
-        }
-      } else {
-        for (Size_t i = 0; i < simd_width; ++i) {
-          keys_arr [i] = std::bit_cast<Unsigned_t>(Extractor(Src [Idx + i]));
-        }
-      }
-      if constexpr (simd_width == 4) {
-        keys = vld1q_u32(keys_arr);
-      } else {
-        keys = vld1q_u64(keys_arr);
-      }
-    }
-
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (!Is_last_pass) {
-        Simd_vec_t sign_bits   = SIMDTraits::and_si(keys, sign_bit_mask);
-        Simd_vec_t is_negative = SIMDTraits::cmpeq(sign_bits, sign_bit_mask);
-        Simd_vec_t xor_mask =
-            SIMDTraits::blendv(SIMDTraits::set1(0), all_bits_mask, is_negative);
-        keys = SIMDTraits::xor_si(keys, xor_mask);
-      } else if constexpr (Is_last_pass) {
-        alignas(16) Unsigned_t keys_arr [simd_width];
-        if constexpr (simd_width == 4) {
-          vst1q_u32(keys_arr, keys);
-        } else {
-          vst1q_u64(keys_arr, keys);
-        }
-
-        for (Size_t i = 0; i < simd_width; ++i) {
-          if (is_nan [i]) continue;
-          keys_arr [i] ^= ((keys_arr [i] >> Radix_cp::Shift_of_sign_bit) == 0)
-              ? Radix_cp::Sign_bit_mask
-              : Radix_cp::All_bits_mask;
-        }
-
-        if constexpr (simd_width == 4) {
-          keys = vld1q_u32(keys_arr);
-        } else {
-          keys = vld1q_u64(keys_arr);
-        }
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      keys = SIMDTraits::xor_si(keys, sign_bit_mask);
-    }
-
-    const int shift_amount =
-        static_cast<int>(Pass << Radix_cp::Shift_of_byte_idx);
-    Simd_vec_t shifted      = SIMDTraits::srli(keys, shift_amount);
-    Simd_vec_t byte_indices = SIMDTraits::and_si(shifted, mask);
-
-    if constexpr (Radix_tp.Order == SortOrder::Descending) {
-      byte_indices = SIMDTraits::sub_epi(mask, byte_indices);
-    }
-
-    alignas(16) Unsigned_t indices [simd_width];
-    if constexpr (simd_width == 4) {
-      vst1q_u32(indices, byte_indices);
-    } else {
-      vst1q_u64(indices, byte_indices);
-    }
-
-    for (Size_t i = 0; i < simd_width; ++i) {
-      if (is_nan [i]) continue;
-      ++Bucket_counts [indices [i]];
-    }
-  }
-
-  for (Size_t Idx = simd_end; Idx < End_idx; ++Idx) {
-    auto       Key            = Extractor(Src [Idx]);
-    Unsigned_t Unsigned_value = std::bit_cast<Unsigned_t>(Key);
-
-    if constexpr (Is_last_pass &&
-                  Radix_tp.NaN_position != NaNPosition::Unhandled) {
-      if (std::isnan(Key)) [[unlikely]] {
-        ++NaN_counts [Thread_id];
-        continue;
-      }
-    }
-
-    if constexpr (std::is_floating_point_v<Key_t> &&
-                  Radix_tp.Has_negative == HasNegative::Yes) {
-      if constexpr (Is_last_pass) {
-        Unsigned_value ^= ((Unsigned_value >> Radix_cp::Shift_of_sign_bit) == 0)
-            ? Radix_cp::Sign_bit_mask
-            : Radix_cp::All_bits_mask;
-      } else {
-        if (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-          Unsigned_value ^= Radix_cp::All_bits_mask;
-      }
-    } else if constexpr (std::is_integral_v<Key_t> &&
-                         Radix_tp.Has_negative == HasNegative::Yes &&
-                         Is_last_pass) {
-      Unsigned_value ^= Radix_cp::Sign_bit_mask;
-    }
-
-    std::uint16_t Byte_idx =
-        (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-        Radix_cp::Mask;
-    if constexpr (Radix_tp.Order == SortOrder::Descending)
-      Byte_idx = Radix_cp::Mask - Byte_idx;
-    ++Bucket_counts [Byte_idx];
-  }
-}
-#endif
-
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_count_buckets_simd(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, const Value_t* __restrict Src,
-    Size_t* Bucket_counts, const Key_extractor_t& Extractor,
-    [[maybe_unused]] Size_t* NaN_counts, [[maybe_unused]] int Thread_id)
-{
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-#if defined(__AVX2__) || defined(__AVX__)
-  Adl_count_buckets_avx2_impl<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                              Radix_tp, Is_last_pass>(
-      Start_idx, End_idx, Pass, Src, Bucket_counts, Extractor, NaN_counts,
-      Thread_id);
-#elif defined(__ARM_NEON) || defined(__aarch64__)
-  Adl_count_buckets_neon_impl<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                              Radix_tp, Is_last_pass>(
-      Start_idx, End_idx, Pass, Src, Bucket_counts, Extractor, NaN_counts,
-      Thread_id);
-#endif
-}
-
-template<typename Size_t, typename Value_t, typename Key_extractor_t,
-         typename Radix_cp, auto Radix_tp, bool Is_last_pass>
-ALWAYS_INLINE void Adl_distribute_to_buckets_simd(
-    Size_t Start_idx, Size_t End_idx, Size_t Pass, Value_t* __restrict Src,
-    Value_t* __restrict Dst, Size_t* Scanned_offsets,
-    const Key_extractor_t& Extractor, [[maybe_unused]] Size_t Thread_NaN_offset)
-{
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-#if defined(__AVX2__) || defined(__AVX__)
-  Adl_distribute_to_buckets_avx2_impl<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                      Radix_tp, Is_last_pass>(
-      Start_idx, End_idx, Pass, Src, Dst, Scanned_offsets, Extractor,
-      Thread_NaN_offset);
-#elif defined(__ARM_NEON) || defined(__aarch64__)
-  Adl_distribute_to_buckets_neon_impl<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                      Radix_tp, Is_last_pass>(
-      Start_idx, End_idx, Pass, Src, Dst, Scanned_offsets, Extractor,
-      Thread_NaN_offset);
-#endif
-}
-
-}  // namespace details
-
-namespace details {
-template<typename ContigIter>
-consteval auto Adl_default_radix_params()
-{
-  using Key_extractor_t = Identity_ke<ContigIter>;
-  using Value_t         = typename std::iterator_traits<ContigIter>::value_type;
-  using Key_t           = std::decay_t<decltype(Key_extractor_t {}.operator() (
-      std::declval<Value_t>()))>;
-
-  if constexpr (std::unsigned_integral<Key_t>) {
-    return Radix_template_params<Key_extractor_t, Dataset_size32_t> {
-      .Has_negative = HasNegative::No
-    };
-  } else {
-    return Radix_template_params<Key_extractor_t, Dataset_size32_t> {};
-  }
-}
-
-template<ContiguousIterator ContigIter,
-         auto Radix_tp = details::Adl_default_radix_params<ContigIter>()>
-void radix_sort_impl(std::execution::sequenced_policy, ContigIter First,
-                     ContigIter Last)
-{
-  static_assert(is_valid_bucket_size<Radix_tp.Bucket_size>,
-                "Bucket size must be 256 or 65536");
-
-  using Value_t         = typename std::iterator_traits<ContigIter>::value_type;
-  using Key_extractor_t = typename decltype(Radix_tp)::Key_extractor_t;
-  Key_extractor_t Extractor {};
-  using Key_t = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-
-  static_assert(
-      ArithmeticKey<Key_t>,
-      "Key type must be arithmetic (excluding bool and character types)");
-
-  static_assert(!(sizeof(Key_t) == 1 && Radix_tp.Bucket_size == 65536U),
-                "Cannot use 65536 bucket size with 1-byte key type");
-
-  static_assert(
-      !(std::is_unsigned_v<Key_t> && Radix_tp.Has_negative == HasNegative::Yes),
-      "Cannot use HasNegative::Yes with unsigned key type");
-
-  using Unsigned_t = std::make_unsigned_t<std::conditional_t<
-      std::is_floating_point_v<Key_t>,
-      std::conditional_t<sizeof(Key_t) == 4, std::uint32_t, std::uint64_t>,
-      Key_t>>;
-
-  using Size_t = typename decltype(Radix_tp)::Dataset_size_t;
-
-  Size_t Size = static_cast<Size_t>(std::distance(First, Last));
-  if (Size <= 1) [[unlikely]]
-    return;
-
-  Value_t* Start_ptr = &*First;
-
-  using Radix_cp = Radix_constexpr_params<Key_t, Radix_tp.Bucket_size>;
-
-  /*static */ std::array<Size_t, Radix_tp.Bucket_size> Bucket_counts {};
-  /*static */ std::array<Size_t, Radix_tp.Bucket_size> Scanned_offsets;
-
-  // Do not use std::make_unique, We need a pod type that is not initialized
-  std::unique_ptr<Value_t []> Buffer(new Value_t [Size] /*()*/);
-#if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-  Value_t* __restrict Src = Start_ptr;
-  Value_t* __restrict Dst = Buffer.get();
-#else
-  Value_t* Src = Start_ptr;
-  Value_t* Dst = Buffer.get();
-#endif
-
-  for (std::uint8_t Pass = 0; Pass < Radix_cp::Passes - 1; ++Pass) {
-    Adl_count_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp,
-                      false>(
-        /*Start_idx     */ 0,
-        /*End_idx       */ Size,
-        /*Pass          */ Pass,
-        /*Src           */ Src,
-        /*Bucket_counts */ Bucket_counts.data(),
-        /*Extractor     */ Extractor,
-        /*NaN_counts    */ nullptr,
-        /*Thread_id     */ 0);
-
-    std::exclusive_scan(Bucket_counts.begin(), Bucket_counts.end(),
-                        Scanned_offsets.begin(), 0, std::plus<> {});
-
-    Adl_distribute_to_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                              Radix_tp, false>(
-        /*Start_idx       */ 0,
-        /*End_idx         */ Size,
-        /*Pass            */ Pass,
-        /*Src             */ Src,
-        /*Dst             */ Dst,
-        /*Scanned_offsets */ Scanned_offsets.data(),
-        /*Extractor       */ Extractor,
-        /*Thread_NaN_offset       */ 0);
-    std::swap(Src, Dst);
-
-    std::fill(Bucket_counts.begin(), Bucket_counts.end(), 0);
-  }
-
-  // Handle the sign bit of the last round
-  //        ^^^^^^^^^^^^
-
-  constexpr bool Handle_NaN = std::is_floating_point_v<Key_t> &&
-      Radix_tp.NaN_position != NaNPosition::Unhandled;
-  [[maybe_unused]] std::array<Size_t, Handle_NaN ? 1 : 0> NaN_counts {};
-
-  Adl_count_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp, true>(
-      /*Start_idx     */ 0,
-      /*End_idx       */ Size,
-      /*Pass          */ Radix_cp::Passes - 1,
-      /*Src           */ Src,
-      /*Bucket_counts */ Bucket_counts.data(),
-      /*Extractor     */ Extractor,
-      /*NaN_counts    */ Handle_NaN ? NaN_counts.data() : nullptr,
-      /*Thread_id     */ 0);
-
-  if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart && Handle_NaN) {
-    std::exclusive_scan(Bucket_counts.begin(), Bucket_counts.end(),
-                        Scanned_offsets.begin(), NaN_counts [0], std::plus<> {});
-  } else {
-    std::exclusive_scan(Bucket_counts.begin(), Bucket_counts.end(),
-                        Scanned_offsets.begin(), 0, std::plus<> {});
-  }
-
-  // For sequential version, we need to handle NaN differently
-  // AtStart: NaN should be placed from 0 to NaN_count-1 (using --NaN_count)
-  // AtEnd: NaN should be placed from Size-NaN_count to Size-1 (using Size -
-  // NaN_count--)
-  [[maybe_unused]] Size_t Thread_NaN_offset = 0;
-  if constexpr (Handle_NaN) {
-    if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-      Thread_NaN_offset = NaN_counts [0];
-    } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-      Thread_NaN_offset = Size - NaN_counts [0];
-    }
-  }
-
-  Adl_distribute_to_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp,
-                            true>(
-      /*Start_idx       */ 0,
-      /*End_idx         */ Size,
-      /*Pass            */ Radix_cp::Passes - 1,
-      /*Src             */ Src,
-      /*Dst             */ Dst,
-      /*Scanned_offsets */ Scanned_offsets.data(),
-      /*Extractor       */ Extractor,
-      /*Thread_NaN_offset */ Handle_NaN ? Thread_NaN_offset : 0);
-  std::swap(Src, Dst);
-
-  if constexpr (Radix_cp::Passes & 1) std::move(Src, Src + Size, Start_ptr);
-}
-
-template<ContiguousIterator ContigIter,
-         auto Radix_tp = details::Adl_default_radix_params<ContigIter>()>
-void radix_sort_impl(std::execution::unsequenced_policy, ContigIter First,
-                     ContigIter Last)
-{
-#if defined(__AVX2__) || defined(__ARM_NEON) || defined(__aarch64__)
-  static_assert(is_valid_bucket_size<Radix_tp.Bucket_size>,
-                "Bucket size must be 256 or 65536");
-
-  using Value_t         = typename std::iterator_traits<ContigIter>::value_type;
-  using Key_extractor_t = typename decltype(Radix_tp)::Key_extractor_t;
-  Key_extractor_t Extractor {};
-  using Key_t = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-
-  static_assert(
-      ArithmeticKey<Key_t>,
-      "Key type must be arithmetic (excluding bool and character types)");
-
-  static_assert(!(sizeof(Key_t) == 1 && Radix_tp.Bucket_size == 65536U),
-                "Cannot use 65536 bucket size with 1-byte key type");
-
-  static_assert(
-      !(std::is_unsigned_v<Key_t> && Radix_tp.Has_negative == HasNegative::Yes),
-      "Cannot use HasNegative::Yes with unsigned key type");
-
-  using Unsigned_t = std::make_unsigned_t<std::conditional_t<
-      std::is_floating_point_v<Key_t>,
-      std::conditional_t<sizeof(Key_t) == 4, std::uint32_t, std::uint64_t>,
-      Key_t>>;
-
-  using Size_t = typename decltype(Radix_tp)::Dataset_size_t;
-
-  Size_t Size = static_cast<Size_t>(std::distance(First, Last));
-  if (Size <= 1) [[unlikely]]
-    return;
-
-  Value_t* Start_ptr = &*First;
-
-  using Radix_cp = Radix_constexpr_params<Key_t, Radix_tp.Bucket_size>;
-
-  std::array<Size_t, Radix_tp.Bucket_size> Bucket_counts {};
-  std::array<Size_t, Radix_tp.Bucket_size> Scanned_offsets;
-
-  std::unique_ptr<Value_t []> Buffer(new Value_t [Size]);
-#  if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-  Value_t* __restrict Src = Start_ptr;
-  Value_t* __restrict Dst = Buffer.get();
-#  else
-  Value_t* Src = Start_ptr;
-  Value_t* Dst = Buffer.get();
-#  endif
-
-  for (std::uint8_t Pass = 0; Pass < Radix_cp::Passes - 1; ++Pass) {
-    Adl_count_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp,
-                           false>(
-        /*Start_idx     */ 0,
-        /*End_idx       */ Size,
-        /*Pass          */ Pass,
-        /*Src           */ Src,
-        /*Bucket_counts */ Bucket_counts.data(),
-        /*Extractor     */ Extractor,
-        /*NaN_counts    */ nullptr,
-        /*Thread_id     */ 0);
-
-    std::exclusive_scan(Bucket_counts.begin(), Bucket_counts.end(),
-                        Scanned_offsets.begin(), 0, std::plus<> {});
-
-    Adl_distribute_to_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                   Radix_tp, false>(
-        /*Start_idx       */ 0,
-        /*End_idx         */ Size,
-        /*Pass            */ Pass,
-        /*Src             */ Src,
-        /*Dst             */ Dst,
-        /*Scanned_offsets */ Scanned_offsets.data(),
-        /*Extractor       */ Extractor,
-        /*Thread_NaN_offset */ 0);
-    std::swap(Src, Dst);
-
-    std::fill(Bucket_counts.begin(), Bucket_counts.end(), 0);
-  }
-
-  constexpr bool Handle_NaN = std::is_floating_point_v<Key_t> &&
-      Radix_tp.NaN_position != NaNPosition::Unhandled;
-  [[maybe_unused]] std::array<Size_t, Handle_NaN ? 1 : 0> NaN_counts {};
-
-  Adl_count_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp,
-                         true>(
-      /*Start_idx     */ 0,
-      /*End_idx       */ Size,
-      /*Pass          */ Radix_cp::Passes - 1,
-      /*Src           */ Src,
-      /*Bucket_counts */ Bucket_counts.data(),
-      /*Extractor     */ Extractor,
-      /*NaN_counts    */ Handle_NaN ? NaN_counts.data() : nullptr,
-      /*Thread_id     */ 0);
-
-  if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart && Handle_NaN) {
-    std::exclusive_scan(Bucket_counts.begin(), Bucket_counts.end(),
-                        Scanned_offsets.begin(), NaN_counts [0], std::plus<> {});
-  } else {
-    std::exclusive_scan(Bucket_counts.begin(), Bucket_counts.end(),
-                        Scanned_offsets.begin(), 0, std::plus<> {});
-  }
-
-  [[maybe_unused]] Size_t Thread_NaN_offset = 0;
-  if constexpr (Handle_NaN) {
-    if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-      Thread_NaN_offset = NaN_counts [0];
-    } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-      Thread_NaN_offset = Size - NaN_counts [0];
-    }
-  }
-
-  Adl_distribute_to_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                 Radix_tp, true>(
-      /*Start_idx       */ 0,
-      /*End_idx         */ Size,
-      /*Pass            */ Radix_cp::Passes - 1,
-      /*Src             */ Src,
-      /*Dst             */ Dst,
-      /*Scanned_offsets */ Scanned_offsets.data(),
-      /*Extractor       */ Extractor,
-      /*Thread_NaN_offset */ Handle_NaN ? Thread_NaN_offset : 0);
-  std::swap(Src, Dst);
-
-  if constexpr (Radix_cp::Passes & 1) std::move(Src, Src + Size, Start_ptr);
-#else
-  radix_sort_impl(std::execution::seq, First, Last);
-#endif
-}
-
-template<ContiguousIterator ContigIter,
-         auto Radix_tp = details::Adl_default_radix_params<ContigIter>()>
-void radix_sort_impl(std::execution::parallel_policy, ContigIter First,
-                     ContigIter Last)
-{
-  static_assert(is_valid_bucket_size<Radix_tp.Bucket_size>,
-                "Bucket size must be 256 or 65536");
-
-  using Value_t         = typename std::iterator_traits<ContigIter>::value_type;
-  using Key_extractor_t = typename decltype(Radix_tp)::Key_extractor_t;
-  Key_extractor_t Extractor {};
-  using Key_t = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-
-  static_assert(
-      ArithmeticKey<Key_t>,
-      "Key type must be arithmetic (excluding bool and character types)");
-
-  static_assert(sizeof(Key_t) >= 4, "Arithmetic type must be at least 4 bytes");
-
-  static_assert(
-      !(std::is_unsigned_v<Key_t> && Radix_tp.Has_negative == HasNegative::Yes),
-      "Cannot use HasNegative::Yes with unsigned key type");
-
-  using Unsigned_t = std::make_unsigned_t<std::conditional_t<
-      std::is_floating_point_v<Key_t>,
-      std::conditional_t<sizeof(Key_t) == 4, std::uint32_t, std::uint64_t>,
-      Key_t>>;
-
-  using Size_t = typename decltype(Radix_tp)::Dataset_size_t;
-
-  Size_t Size = static_cast<Size_t>(std::distance(First, Last));
-  if (Size <= 1) [[unlikely]]
-    return;
-
-  Value_t* Start_ptr = &*First;
-
-  using Radix_cp = Radix_constexpr_params<Key_t, Radix_tp.Bucket_size>;
-
-  // Optimization: Dynamically adjust thread count to avoid small chunks
-  const std::int32_t Hardware_concurrency = omp_get_num_procs();
-  const std::int32_t Min_chunk_size       = 1024;
-  const std::int32_t Actual_threads       = std::max(
-      std::min(Hardware_concurrency, (std::int32_t)(Size / Min_chunk_size)), 1);
-  const Size_t Chunk = (Size + Actual_threads - 1) / Actual_threads;  // Average
-  const Size_t Local_data_size = Actual_threads * 2 * Radix_tp.Bucket_size;
-
-  // <Continuous data classification> allocation layout: [thread0_bucket0,
-  // thread1_bucket0, ... thread0_offset0, thread1_offset0, ...]
-  //
-  // <Thread-local data continuity> allocation layout: [thread0_bucket0,
-  // thread0_offset0, thread1_bucket0, thread1_offset0, ...]
-  //
-  // Using <Thread-local data continuity> Take advantage of cache locality, help
-  // CPU prediction, and have threads load data
-  //
-  // Merge local bucket count and offset arrays to reduce memory
-  std::unique_ptr<Size_t []> Local_data { std::make_unique<Size_t []>(
-      Local_data_size) };
-  // Helper function: Get thread's bucket count pointer
-  auto Func_get_local_bucket_counts = [&](int Thread_id) -> Size_t* {
-    return Local_data.get() + Thread_id * 2 * Radix_tp.Bucket_size;
-  };
-  // Helper function: Get thread's offset pointer
-  auto Func_get_local_scanned_offsets = [&](int Thread_id) -> Size_t* {
-    return Local_data.get() + (Thread_id * 2 + 1) * Radix_tp.Bucket_size;
-  };
-
-  std::array<Size_t, Radix_tp.Bucket_size> Global_prefix {};
-
-  std::unique_ptr<Value_t []> Buffer(new Value_t [Size] /*()*/);
-#if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-  Value_t* __restrict Src = Start_ptr;
-  Value_t* __restrict Dst = Buffer.get();
-#else
-  Value_t* Src = Start_ptr;
-  Value_t* Dst = Buffer.get();
-#endif
-
-  LOOP_UNROLL(8) for (std::uint8_t Pass = 0; Pass < Radix_cp::Passes - 1; ++Pass)
+  if (Thread_id_ < Remain_)
   {
-    // Phase 1: Parallel counting phase
-    {
-#pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t*   Local_bucket_counts = Func_get_local_bucket_counts(Thread_id);
-
-        // Calculate interval processed by current thread
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        // Local counting
-        Adl_count_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp,
-                          false>(
-            /*Start_idx     */ Start_idx,
-            /*End_idx       */ End_idx,
-            /*Pass          */ Pass,
-            /*Src           */ Src,
-            /*Bucket_counts */ Local_bucket_counts,
-            /*Extractor     */ Extractor,
-            /*NaN_counts    */ nullptr,
-            /*Thread_id     */ 0);
-      }
-    }
-
-    // Phase 2: Optimized prefix sum calculation
-    {
-      // Global reduction
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-        Size_t* Local_bucket_counts = Func_get_local_bucket_counts(Thread);
-
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-
-      //  Calculate global prefix sum
-      std::exclusive_scan(Global_prefix.begin(), Global_prefix.end(),
-                          Global_prefix.begin(), 0, std::plus<> {});
-
-      // Calculate local offsets - Single pass completion
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-#if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-        Size_t* __restrict Local_bucket_counts =
-            Func_get_local_bucket_counts(Thread);
-        Size_t* __restrict Local_scanned_offsets =
-            Func_get_local_scanned_offsets(Thread);
-#else
-        Size_t* Local_bucket_counts   = Func_get_local_bucket_counts(Thread);
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread);
-#endif
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Local_scanned_offsets [Bucket] = Global_prefix [Bucket];
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-    }
-
-    // Phase 3: Parallel scattering phase
-    {
-#pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread_id);
-
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        // Scatter elements to correct positions
-
-        Adl_distribute_to_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                  Radix_tp, false>(
-            /*Start_idx       */ Start_idx,
-            /*End_idx         */ End_idx,
-            /*Pass            */ Pass,
-            /*Src             */ Src,
-            /*Dst             */ Dst,
-            /*Scanned_offsets */ Local_scanned_offsets,
-            /*Extractor       */ Extractor,
-            /*NaN_count       */ 0);
-      }
-    }
-
-    std::swap(Src, Dst);
-
-    std::fill(Local_data.get(), Local_data.get() + Local_data_size, 0);
-    std::fill(Global_prefix.begin(), Global_prefix.end(), 0);
+    Beg_index_ = Thread_id_ * (Step_ + 1);
+    End_index_ = Beg_index_ + (Step_ + 1);
   }
-
-  constexpr bool Handle_NaN = std::is_floating_point_v<Key_t> &&
-      Radix_tp.NaN_position != NaNPosition::Unhandled;
-  [[maybe_unused]] std::unique_ptr<Size_t []> Local_NaN_counts {
-    Handle_NaN ? std::make_unique<Size_t []>(Actual_threads) : nullptr
-  };
-  [[maybe_unused]] std::unique_ptr<Size_t []> Thread_NaN_offsets {
-    Handle_NaN ? std::make_unique<Size_t []>(Actual_threads) : nullptr
-  };
+  else
   {
-    {
-#pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t*   Local_bucket_counts = Func_get_local_bucket_counts(Thread_id);
-
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        Adl_count_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp, Radix_tp,
-                          true>(
-            /*Start_idx     */ Start_idx,
-            /*End_idx       */ End_idx,
-            /*Pass          */ Radix_cp::Passes - 1,
-            /*Src           */ Src,
-            /*Bucket_counts */ Local_bucket_counts,
-            /*Extractor     */ Extractor,
-            /*NaN_counts    */ Handle_NaN ? Local_NaN_counts.get() : nullptr,
-            /*Thread_id     */ Handle_NaN ? Thread_id : 0);
-      }
-    }
-
-    {
-      [[maybe_unused]] Size_t Total_NaN_count = 0;
-      if constexpr (Handle_NaN) {
-        Total_NaN_count = std::accumulate(
-            Local_NaN_counts.get(), Local_NaN_counts.get() + Actual_threads, 0);
-      }
-
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-        Size_t* Local_bucket_counts = Func_get_local_bucket_counts(Thread);
-
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-
-      if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart && Handle_NaN) {
-        std::exclusive_scan(Global_prefix.begin(), Global_prefix.end(),
-                            Global_prefix.begin(), Total_NaN_count,
-                            std::plus<> {});
-      } else {
-        std::exclusive_scan(Global_prefix.begin(), Global_prefix.end(),
-                            Global_prefix.begin(), 0, std::plus<> {});
-      }
-
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-#if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-        Size_t* __restrict Local_bucket_counts =
-            Func_get_local_bucket_counts(Thread);
-        Size_t* __restrict Local_scanned_offsets =
-            Func_get_local_scanned_offsets(Thread);
-#else
-        Size_t* Local_bucket_counts   = Func_get_local_bucket_counts(Thread);
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread);
-#endif
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Local_scanned_offsets [Bucket] = Global_prefix [Bucket];
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-
-      if constexpr (Handle_NaN) {
-        Size_t NaN_running_sum;
-        if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-          NaN_running_sum = 0;
-        } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-          NaN_running_sum = Size - Total_NaN_count;
-        }
-
-        LOOP_UNROLL(8)
-        for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-          Thread_NaN_offsets [Thread] = NaN_running_sum;
-          NaN_running_sum += Local_NaN_counts [Thread];
-        }
-      }
-    }
-
-    {
-#pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread_id);
-
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        Adl_distribute_to_buckets<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                  Radix_tp, true>(
-            /*Start_idx       */ Start_idx,
-            /*End_idx         */ End_idx,
-            /*Pass            */ Radix_cp::Passes - 1,
-            /*Src             */ Src,
-            /*Dst             */ Dst,
-            /*Scanned_offsets */ Local_scanned_offsets,
-            /*Extractor       */ Extractor,
-            /*NaN_count       */ Handle_NaN ? Thread_NaN_offsets [Thread_id] : 0);
-      }
-    }
+    Beg_index_ = Remain_ * (Step_ + 1) + (Thread_id_ - Remain_) * Step_;
+    End_index_ = Beg_index_ + Step_;
   }
 
-  std::swap(Src, Dst);
+  return { Beg_index_, End_index_ };
 }
 
-template<ContiguousIterator ContigIter,
-         auto Radix_tp = details::Adl_default_radix_params<ContigIter>()>
-void radix_sort_impl(std::execution::parallel_unsequenced_policy,
-                     ContigIter First, ContigIter Last)
+template<bool Is_last_pass_, radix_options Radix_opts_, typename Ty_, typename Proj_functor_>
+ALWAYS_INLINE void
+Radix_lsd_histogram_(Ty_ const &Val_,
+                     size_t (*const Chunks_)[Radix_opts_.bucket_size],
+                     size_t                             Thread_id_,
+                     size_t                             Radix_,
+                     Proj_functor_ const               &Proj_func_,
+                     [[maybe_unused]] std::span<size_t> NaN_counts_ = {})
 {
-#if defined(__AVX2__) || defined(__ARM_NEON) || defined(__aarch64__)
-  static_assert(is_valid_bucket_size<Radix_tp.Bucket_size>,
-                "Bucket size must be 256 or 65536");
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_>)
+  {
+    if constexpr (Is_last_pass_ and Radix_opts_.nan_pos != radix_nan_position::unhandled)
+    {
+      if (std::isnan(Proj_func_.Get_key_value_(Val_))) [[unlikely]]
+      {
+        ++NaN_counts_[Thread_id_];
+        return;
+      }
+    }
+    if constexpr (Is_last_pass_)
+    {
+      ++Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Val_, Radix_, Proj_func_)];
+    }
+    else
+    {
+      ++Chunks_[Thread_id_][Radix_key_<Radix_opts_>(
+          Proj_func_(Radix_float_bitwise_not_tag_, Proj_func_.Get_key_value_(Val_)), Radix_)];
+    }
+  }
 
-  using Value_t         = typename std::iterator_traits<ContigIter>::value_type;
-  using Key_extractor_t = typename decltype(Radix_tp)::Key_extractor_t;
-  Key_extractor_t Extractor {};
-  using Key_t = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
+  if constexpr (std::integral<typename Proj_functor_::Key_ty_>)
+  {
+    if constexpr (std::signed_integral<typename Proj_functor_::Key_ty_> and Is_last_pass_)
+    {
+      ++Chunks_[Thread_id_]
+               [Radix_key_<Radix_opts_>(Proj_func_(Radix_int_xor_tag_, Proj_func_.Get_key_value_(Val_)), Radix_)];
+    }
+    else
+    {
+      ++Chunks_[Thread_id_][Radix_key_<Radix_opts_>(
+          static_cast<typename Proj_functor_::Unsigned_ty_>(Proj_func_.Get_key_value_(Val_)), Radix_)];
+    }
+  }
+}
 
-  static_assert(
-      ArithmeticKey<Key_t>,
-      "Key type must be arithmetic (excluding bool and character types)");
+template<bool          Is_last_pass_,
+         radix_options Radix_opts_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
+ALWAYS_INLINE void
+Radix_lsd_collect_(Random_point_ &RESTRICT_KEYWORD        Begin_,
+                   size_t                                 Size_,
+                   size_t                                 Index_,
+                   Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                   size_t (*const Chunks_)[Radix_opts_.bucket_size],
+                   size_t                   Thread_id_,
+                   size_t                   Radix_,
+                   Proj_functor_ const     &Proj_func_,
+                   [[maybe_unused]] size_t &NaN_offset_ = 0)
+{
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_>)
+  {
+    if constexpr (Is_last_pass_ and Radix_opts_.nan_pos != radix_nan_position::unhandled)
+    {
+      if (std::isnan(Proj_func_.Get_key_value_(Begin_[Index_]))) [[unlikely]]
+      {
+        if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
+        {
+          Output_[--NaN_offset_] = std::move(Begin_[Index_]);
+        }
+        else if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)
+        {
+          Output_[Size_ - NaN_offset_--] = std::move(Begin_[Index_]);
+        }
+        return;
+      }
+    }
+    if constexpr (Is_last_pass_)
+    {
+      Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Index_], Radix_, Proj_func_)]] =
+          std::move(Begin_[Index_]);
+    }
+    else
+    {
+      Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(
+          Proj_func_(Radix_float_bitwise_not_tag_, Proj_func_.Get_key_value_(Begin_[Index_])), Radix_)]] =
+          std::move(Begin_[Index_]);
+    }
+  }
+  if constexpr (std::integral<typename Proj_functor_::Key_ty_>)
+  {
+    if constexpr (std::signed_integral<typename Proj_functor_::Key_ty_> and Is_last_pass_)
+    {
+      Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(
+          Proj_func_(Radix_int_xor_tag_, Proj_func_.Get_key_value_(Begin_[Index_])), Radix_)]] =
+          std::move(Begin_[Index_]);
+    }
+    else
+    {
+      Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(
+          static_cast<typename Proj_functor_::Unsigned_ty_>(Proj_func_.Get_key_value_(Begin_[Index_])), Radix_)]] =
+          std::move(Begin_[Index_]);
+    }
+  }
+}
 
-  static_assert(sizeof(Key_t) >= 4, "Arithmetic type must be at least 4 bytes");
+template<bool          Is_parallel_,
+         bool          Is_lass_pass_,
+         radix_options Radix_opts_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
+ALWAYS_INLINE void
+LSD_integer_radix_pass_(Radix_parallel_data_                   Paral_data_,
+                        Random_point_ &RESTRICT_KEYWORD        Begin_,
+                        size_t                                 Size_,
+                        Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                        size_t (*const Chunks_)[Radix_opts_.bucket_size],
+                        size_t                             Radix_,
+                        Proj_functor_ const               &Proj_func_,
+                        [[maybe_unused]] std::span<size_t> NaN_counts_ = {})
+{
+  if constexpr (Is_parallel_)
+  {
+#pragma omp parallel num_threads(Paral_data_.Threads_num_)
+    {
+      int const Thread_id_ = omp_get_thread_num();
 
-  static_assert(
-      !(std::is_unsigned_v<Key_t> && Radix_tp.Has_negative == HasNegative::Yes),
-      "Cannot use HasNegative::Yes with unsigned key type");
+      auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
 
-  using Unsigned_t = std::make_unsigned_t<std::conditional_t<
-      std::is_floating_point_v<Key_t>,
-      std::conditional_t<sizeof(Key_t) == 4, std::uint32_t, std::uint64_t>,
-      Key_t>>;
+      Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+      {
+        Radix_lsd_histogram_<Is_lass_pass_, Radix_opts_>(Begin_[Index_], Chunks_, Thread_id_, Radix_, Proj_func_,
+                                                         NaN_counts_);
+      });
+    }
+  }
+  else
+  {
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
+    {
+      Radix_lsd_histogram_<Is_lass_pass_, Radix_opts_>(Begin_[Index_], Chunks_, 0, Radix_, Proj_func_, NaN_counts_);
+    });
+  }
 
-  using Size_t = typename decltype(Radix_tp)::Dataset_size_t;
+#pragma region PREFIX_SUM
 
-  Size_t Size = static_cast<Size_t>(std::distance(First, Last));
-  if (Size <= 1) [[unlikely]]
+  size_t NaN_offset_ = 0;
+  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
+                Radix_opts_.nan_pos != radix_nan_position::unhandled and Is_lass_pass_)
+  {
+    NaN_offset_ = std::reduce(NaN_counts_.begin(), NaN_counts_.end());
+
+    if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
+    {
+      for (size_t Thread_id_ = 0; Thread_id_ < Paral_data_.Threads_num_; ++Thread_id_)
+      {
+        Chunks_[Thread_id_][0] += NaN_counts_[Thread_id_];
+      }
+    }
+  }
+  size_t Non_empty_count_ = 0;
+
+  Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
+  {
+    size_t Last_ = Index_ ? Chunks_[Paral_data_.Threads_num_ - 1][Index_ - 1] : 0;
+    Chunks_[0][Index_] += Last_;
+
+    for (size_t Thread_id_ = 1; Thread_id_ < Paral_data_.Threads_num_; ++Thread_id_)
+    {
+      Chunks_[Thread_id_][Index_] += Chunks_[Thread_id_ - 1][Index_];
+    }
+
+    Non_empty_count_ += (Chunks_[Paral_data_.Threads_num_ - 1][Index_] - Last_);
+  });
+
+  if (Non_empty_count_ <= 1)
+  {
     return;
-
-  Value_t* Start_ptr = &*First;
-
-  using Radix_cp = Radix_constexpr_params<Key_t, Radix_tp.Bucket_size>;
-
-  // Optimization: Dynamically adjust thread count to avoid small chunks
-  const std::int32_t Hardware_concurrency = omp_get_num_procs();
-  const std::int32_t Min_chunk_size       = 1024;
-  const std::int32_t Actual_threads       = std::max(
-      std::min(Hardware_concurrency, (std::int32_t)(Size / Min_chunk_size)), 1);
-  const Size_t Chunk = (Size + Actual_threads - 1) / Actual_threads;  // Average
-  const Size_t Local_data_size = Actual_threads * 2 * Radix_tp.Bucket_size;
-
-  // Merge local bucket count and offset arrays to reduce memory
-  std::unique_ptr<Size_t []> Local_data { std::make_unique<Size_t []>(
-      Local_data_size) };
-  // Helper function: Get thread's bucket count pointer
-  auto Func_get_local_bucket_counts = [&](int Thread_id) -> Size_t* {
-    return Local_data.get() + Thread_id * 2 * Radix_tp.Bucket_size;
-  };
-  // Helper function: Get thread's offset pointer
-  auto Func_get_local_scanned_offsets = [&](int Thread_id) -> Size_t* {
-    return Local_data.get() + (Thread_id * 2 + 1) * Radix_tp.Bucket_size;
-  };
-
-  std::array<Size_t, Radix_tp.Bucket_size> Global_prefix {};
-
-  std::unique_ptr<Value_t []> Buffer(new Value_t [Size]);
-#  if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-  Value_t* __restrict Src = Start_ptr;
-  Value_t* __restrict Dst = Buffer.get();
-#  else
-  Value_t* Src = Start_ptr;
-  Value_t* Dst = Buffer.get();
-#  endif
-
-  LOOP_UNROLL(8) for (std::uint8_t Pass = 0; Pass < Radix_cp::Passes - 1; ++Pass)
-  {
-    // Phase 1: Parallel counting phase with SIMD optimization
-    {
-#  pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t*   Local_bucket_counts = Func_get_local_bucket_counts(Thread_id);
-
-        // Calculate interval processed by current thread
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        // Local counting with SIMD
-        Adl_count_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                               Radix_tp, false>(
-            /*Start_idx     */ Start_idx,
-            /*End_idx       */ End_idx,
-            /*Pass          */ Pass,
-            /*Src           */ Src,
-            /*Bucket_counts */ Local_bucket_counts,
-            /*Extractor     */ Extractor,
-            /*NaN_counts    */ nullptr,
-            /*Thread_id     */ 0);
-      }
-    }
-
-    // Phase 2: Optimized prefix sum calculation
-    {
-      // Global reduction
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-        Size_t* Local_bucket_counts = Func_get_local_bucket_counts(Thread);
-
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-
-      //  Calculate global prefix sum
-      std::exclusive_scan(Global_prefix.begin(), Global_prefix.end(),
-                          Global_prefix.begin(), 0, std::plus<> {});
-
-      // Calculate local offsets - Single pass completion
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-#  if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-        Size_t* __restrict Local_bucket_counts =
-            Func_get_local_bucket_counts(Thread);
-        Size_t* __restrict Local_scanned_offsets =
-            Func_get_local_scanned_offsets(Thread);
-#  else
-        Size_t* Local_bucket_counts   = Func_get_local_bucket_counts(Thread);
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread);
-#  endif
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Local_scanned_offsets [Bucket] = Global_prefix [Bucket];
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-    }
-
-    // Phase 3: Parallel scattering phase with SIMD optimization
-    {
-#  pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread_id);
-
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        // Scatter elements to correct positions with SIMD
-        Adl_distribute_to_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                       Radix_tp, false>(
-            /*Start_idx       */ Start_idx,
-            /*End_idx         */ End_idx,
-            /*Pass            */ Pass,
-            /*Src             */ Src,
-            /*Dst             */ Dst,
-            /*Scanned_offsets */ Local_scanned_offsets,
-            /*Extractor       */ Extractor,
-            /*Thread_NaN_offset */ 0);
-      }
-    }
-
-    std::swap(Src, Dst);
-
-    std::fill(Local_data.get(), Local_data.get() + Local_data_size, 0);
-    std::fill(Global_prefix.begin(), Global_prefix.end(), 0);
   }
 
-  constexpr bool Handle_NaN = std::is_floating_point_v<Key_t> &&
-      Radix_tp.NaN_position != NaNPosition::Unhandled;
-  [[maybe_unused]] std::unique_ptr<Size_t []> Local_NaN_counts {
-    Handle_NaN ? std::make_unique<Size_t []>(Actual_threads) : nullptr
-  };
-  [[maybe_unused]] std::unique_ptr<Size_t []> Thread_NaN_offsets {
-    Handle_NaN ? std::make_unique<Size_t []>(Actual_threads) : nullptr
-  };
+#pragma endregion PREFIX_SUM
+
+  if constexpr (Is_parallel_)
   {
+#pragma omp parallel num_threads(Paral_data_.Threads_num_)
     {
-#  pragma omp parallel num_threads(Actual_threads)
+      int const Thread_id_ = omp_get_thread_num();
+
+      auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
+
+      Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
       {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t*   Local_bucket_counts = Func_get_local_bucket_counts(Thread_id);
-
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        // Local counting with SIMD for last pass
-        Adl_count_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                               Radix_tp, true>(
-            /*Start_idx     */ Start_idx,
-            /*End_idx       */ End_idx,
-            /*Pass          */ Radix_cp::Passes - 1,
-            /*Src           */ Src,
-            /*Bucket_counts */ Local_bucket_counts,
-            /*Extractor     */ Extractor,
-            /*NaN_counts    */ Handle_NaN ? Local_NaN_counts.get() : nullptr,
-            /*Thread_id     */ Handle_NaN ? Thread_id : 0);
-      }
-    }
-
-    {
-      [[maybe_unused]] Size_t Total_NaN_count = 0;
-      if constexpr (Handle_NaN) {
-        Total_NaN_count = std::accumulate(
-            Local_NaN_counts.get(), Local_NaN_counts.get() + Actual_threads, 0);
-      }
-
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-        Size_t* Local_bucket_counts = Func_get_local_bucket_counts(Thread);
-
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-
-      if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart && Handle_NaN) {
-        std::exclusive_scan(Global_prefix.begin(), Global_prefix.end(),
-                            Global_prefix.begin(), Total_NaN_count,
-                            std::plus<> {});
-      } else {
-        std::exclusive_scan(Global_prefix.begin(), Global_prefix.end(),
-                            Global_prefix.begin(), 0, std::plus<> {});
-      }
-
-      for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-#  if defined(__clang__) || defined(__GNUC__) || defined(_MSC_VER)
-        Size_t* __restrict Local_bucket_counts =
-            Func_get_local_bucket_counts(Thread);
-        Size_t* __restrict Local_scanned_offsets =
-            Func_get_local_scanned_offsets(Thread);
-#  else
-        Size_t* Local_bucket_counts   = Func_get_local_bucket_counts(Thread);
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread);
-#  endif
-        LOOP_UNROLL(8)
-        for (std::uint32_t Bucket = 0; Bucket < Radix_tp.Bucket_size; ++Bucket) {
-          Local_scanned_offsets [Bucket] = Global_prefix [Bucket];
-          Global_prefix [Bucket] += Local_bucket_counts [Bucket];
-        }
-      }
-
-      if constexpr (Handle_NaN) {
-        Size_t NaN_running_sum;
-        if constexpr (Radix_tp.NaN_position == NaNPosition::AtStart) {
-          NaN_running_sum = 0;
-        } else if constexpr (Radix_tp.NaN_position == NaNPosition::AtEnd) {
-          NaN_running_sum = Size - Total_NaN_count;
-        }
-
-        LOOP_UNROLL(8)
-        for (std::int32_t Thread = 0; Thread < Actual_threads; ++Thread) {
-          Thread_NaN_offsets [Thread] = NaN_running_sum;
-          NaN_running_sum += Local_NaN_counts [Thread];
-        }
-      }
-    }
-
-    {
-#  pragma omp parallel num_threads(Actual_threads)
-      {
-        const int Thread_id           = omp_get_thread_num();
-        Size_t* Local_scanned_offsets = Func_get_local_scanned_offsets(Thread_id);
-
-        const Size_t Start_idx = Thread_id * Chunk;
-        const Size_t End_idx   = std::min(Size, (Thread_id + 1) * Chunk);
-
-        // Scatter elements to correct positions with SIMD for last pass
-        Adl_distribute_to_buckets_simd<Size_t, Value_t, Key_extractor_t, Radix_cp,
-                                       Radix_tp, true>(
-            /*Start_idx       */ Start_idx,
-            /*End_idx         */ End_idx,
-            /*Pass            */ Radix_cp::Passes - 1,
-            /*Src             */ Src,
-            /*Dst             */ Dst,
-            /*Scanned_offsets */ Local_scanned_offsets,
-            /*Extractor       */ Extractor,
-            /*Thread_NaN_offset */
-            Handle_NaN ? Thread_NaN_offsets [Thread_id] : 0);
-      }
+        Radix_lsd_collect_<Is_lass_pass_, Radix_opts_>(Begin_, Size_, Beg_index_ + (End_index_ - 1 - Index_), Output_,
+                                                       Chunks_, Thread_id_, Radix_, Proj_func_, NaN_offset_);
+      });
     }
   }
+  else
+  {
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
+    {
+      Radix_lsd_collect_<Is_lass_pass_, Radix_opts_>(Begin_, Size_, Size_ - 1 - Index_, Output_, Chunks_, 0, Radix_,
+                                                     Proj_func_, NaN_offset_);
+    });
+  }
 
-  std::swap(Src, Dst);
-
-#else
-  radix_sort_impl(std::execution::par, First, Last);
-#endif
+  std::swap(Begin_, Output_);
 }
 
-}  // namespace details
-
-template<details::ContiguousIterator ContigIter>
-void radix_sort(ContigIter first, ContigIter last)
+template<bool          Is_parallel_,
+         radix_options Radix_opts_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
+inline void
+LSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
+                        size_t                                 Size_,
+                        Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                        size_t                                 Radix_,
+                        Proj_functor_ const                   &Proj_func_)
 {
-  details::radix_sort_impl(std::execution::seq, first, last);
-}
-
-template<details::ContiguousIterator       ContigIter,
-         details::SupportedExecutionPolicy ExPo>
-void radix_sort(ExPo&& policy, ContigIter first, ContigIter last)
-{
-  details::radix_sort_impl(std::forward<ExPo>(policy), first, last);
-}
-
-template<details::ContiguousIterator ContigIter, auto Radix_tp>
-void radix_sort(ContigIter first, ContigIter last)
-{
-  details::radix_sort_impl<ContigIter, Radix_tp>(std::execution::seq, first,
-                                                 last);
-}
-
-template<details::ContiguousIterator       ContigIter,
-         details::SupportedExecutionPolicy ExPo, auto Radix_tp>
-void radix_sort(ExPo&& policy, ContigIter first, ContigIter last)
-{
-  details::radix_sort_impl<ContigIter, Radix_tp>(std::forward<ExPo>(policy),
-                                                 first, last);
-}
-
-template<details::ContiguousIterator ContigIter, typename KeyType>
-void radix_sort_by_member(ContigIter first, ContigIter last,
-                          KeyType(std::iter_value_t<ContigIter>::* member_ptr))
-{
-  using Value_t = std::iter_value_t<ContigIter>;
-  details::radix_sort_impl<
-      ContigIter,
-      Radix_template_params<member_key_extractor<Value_t, KeyType>,
-                            std::uint32_t> {}>(std::execution::seq, first, last);
-}
-
-template<details::ContiguousIterator       ContigIter,
-         details::SupportedExecutionPolicy ExPo, typename KeyType>
-void radix_sort_by_member(ExPo&& policy, ContigIter first, ContigIter last,
-                          KeyType(std::iter_value_t<ContigIter>::* member_ptr))
-{
-  using Value_t = std::iter_value_t<ContigIter>;
-  details::radix_sort_impl<
-      ContigIter,
-      Radix_template_params<member_key_extractor<Value_t, KeyType>,
-                            std::uint32_t> {}>(std::forward<ExPo>(policy), first,
-                                               last);
-}
-
-template<details::ContiguousIterator ContigIter, auto Radix_tp, typename KeyType>
-void radix_sort_by_member(ContigIter first, ContigIter last,
-                          KeyType(std::iter_value_t<ContigIter>::* member_ptr))
-{
-  using Value_t     = std::iter_value_t<ContigIter>;
-  using NewRadix_tp = decltype(Radix_tp);
-  using NewParams = Radix_template_params<member_key_extractor<Value_t, KeyType>,
-                                          typename NewRadix_tp::Dataset_size_t>;
-  NewParams new_params {};
-  new_params.Bucket_size  = Radix_tp.Bucket_size;
-  new_params.Order        = Radix_tp.Order;
-  new_params.Has_negative = Radix_tp.Has_negative;
-  new_params.NaN_position = Radix_tp.NaN_position;
-  details::radix_sort_impl<ContigIter, new_params>(std::execution::seq, first,
-                                                   last);
-}
-
-template<details::ContiguousIterator       ContigIter,
-         details::SupportedExecutionPolicy ExPo, auto Radix_tp, typename KeyType>
-void radix_sort_by_member(ExPo&& policy, ContigIter first, ContigIter last,
-                          KeyType(std::iter_value_t<ContigIter>::* member_ptr))
-{
-  using Value_t     = std::iter_value_t<ContigIter>;
-  using NewRadix_tp = decltype(Radix_tp);
-  using NewParams = Radix_template_params<member_key_extractor<Value_t, KeyType>,
-                                          typename NewRadix_tp::Dataset_size_t>;
-  NewParams new_params {};
-  new_params.Bucket_size  = Radix_tp.Bucket_size;
-  new_params.Order        = Radix_tp.Order;
-  new_params.Has_negative = Radix_tp.Has_negative;
-  new_params.NaN_position = Radix_tp.NaN_position;
-  details::radix_sort_impl<ContigIter, new_params>(std::forward<ExPo>(policy),
-                                                   first, last);
-}
-
-template<details::ContiguousIterator ContigIter, typename Func>
-void radix_sort_by(ContigIter first, ContigIter last, Func&& func)
-{
-  using Value_t = std::iter_value_t<ContigIter>;
-  using Func_t  = std::decay_t<Func>;
-  details::radix_sort_impl<
-      ContigIter,
-      Radix_template_params<function_key_extractor<Func_t>, std::uint32_t> {}>(
-      std::execution::seq, first, last);
-}
-
-template<details::ContiguousIterator       ContigIter,
-         details::SupportedExecutionPolicy ExPo, typename Func>
-void radix_sort_by(ExPo&& policy, ContigIter first, ContigIter last, Func&& func)
-{
-  using Value_t = std::iter_value_t<ContigIter>;
-  using Func_t  = std::decay_t<Func>;
-  details::radix_sort_impl<
-      ContigIter,
-      Radix_template_params<function_key_extractor<Func_t>, std::uint32_t> {}>(
-      std::forward<ExPo>(policy), first, last);
-}
-
-template<details::ContiguousIterator ContigIter, auto Radix_tp, typename Func>
-void radix_sort_by(ContigIter first, ContigIter last, Func&& func)
-{
-  using Value_t     = std::iter_value_t<ContigIter>;
-  using Func_t      = std::decay_t<Func>;
-  using NewRadix_tp = decltype(Radix_tp);
-  using NewParams   = Radix_template_params<function_key_extractor<Func_t>,
-                                            typename NewRadix_tp::Dataset_size_t>;
-  NewParams new_params {};
-  new_params.Bucket_size  = Radix_tp.Bucket_size;
-  new_params.Order        = Radix_tp.Order;
-  new_params.Has_negative = Radix_tp.Has_negative;
-  new_params.NaN_position = Radix_tp.NaN_position;
-  details::radix_sort_impl<ContigIter, new_params>(std::execution::seq, first,
-                                                   last);
-}
-
-template<details::ContiguousIterator       ContigIter,
-         details::SupportedExecutionPolicy ExPo, auto Radix_tp, typename Func>
-void radix_sort_by(ExPo&& policy, ContigIter first, ContigIter last, Func&& func)
-{
-  using Value_t     = std::iter_value_t<ContigIter>;
-  using Func_t      = std::decay_t<Func>;
-  using NewRadix_tp = decltype(Radix_tp);
-  using NewParams   = Radix_template_params<function_key_extractor<Func_t>,
-                                            typename NewRadix_tp::Dataset_size_t>;
-  NewParams new_params {};
-  new_params.Bucket_size  = Radix_tp.Bucket_size;
-  new_params.Order        = Radix_tp.Order;
-  new_params.Has_negative = Radix_tp.Has_negative;
-  new_params.NaN_position = Radix_tp.NaN_position;
-  details::radix_sort_impl<ContigIter, new_params>(std::forward<ExPo>(policy),
-                                                   first, last);
-}
-
-// TODO
-namespace experimental {
-// You might use this version, as it has lower memory overhead and high
-// performance when the passed-in type <Value_t> is large.
-template<details::ContiguousIterator ContigIter,
-         auto Radix_tp = details::Adl_default_radix_params<ContigIter>()>
-void radix_sort_indexed_impl(std::execution::sequenced_policy, ContigIter First,
-                             ContigIter Last)
-{
-  using Value_t         = std::iter_value_t<ContigIter>;
-  using Key_extractor_t = typename decltype(Radix_tp)::Key_extractor_t;
-  Key_extractor_t Extractor {};
-  using Key_t = std::decay_t<decltype(Extractor(std::declval<Value_t>()))>;
-
-  static_assert(
-      details::ArithmeticKey<Key_t>,
-      "Key type must be arithmetic (excluding bool and character types)");
-  static_assert(!(sizeof(Key_t) == 1 && Radix_tp.Bucket_size == 65536U),
-                "Cannot use 65536 bucket size with 1-byte key type");
-
-  using Radix_cp   = details::Radix_constexpr_params<Key_t, Radix_tp.Bucket_size>;
-  using Unsigned_t = typename Radix_cp::Unsigned_t;
-  using Size_t     = typename decltype(Radix_tp)::Dataset_size_t;
-
-  Size_t Size = std::distance(First, Last);
-  if (Size <= 1) [[unlikely]]
+  if (Size_ == 0) [[unlikely]]
+  {
     return;
-  auto* Ptr = &*First;
+  }
 
-  std::array<Size_t, Radix_tp.Bucket_size> Bucket_count;
-  std::array<Size_t, Radix_tp.Bucket_size> Scanned;
+  int Threads_num_ = 1;
+  if constexpr (Is_parallel_)
+  {
+    Threads_num_ = omp_get_num_procs();
+  }
 
-  // Size_t is 4Byte or 8Byte, can set
-  std::unique_ptr<Size_t []> indices_current(new Size_t [Size]);
-  std::unique_ptr<Size_t []> indices_next(new Size_t [Size]);
+  Radix_chunk_context_<Radix_opts_> Chunk_ctx_;
+  Chunk_ctx_.Init_(Size_, Threads_num_);
+
+  auto *RESTRICT_KEYWORD Chunks_      = Chunk_ctx_.Chunks_;
+  size_t                 Buffer_size_ = Chunk_ctx_.Buffer_size_ * sizeof(size_t);
+  auto const             Paral_data_  = Chunk_ctx_.Paral_data_;
   /*
-  // also can use Pointer, it depends on the computer's bit version
-  std::unique_ptr<Value_t* []> ptrs_current(new Value_t * [Size]);
-  std::unique_ptr<Value_t* []> ptrs_next(new Value_t * [Size]);
+  //< Undefined behavior caused by conflicts between inline optimization and stack variable lifetime/alias analysis
+  //
+  //< Under (__forceinline), if the following stack array is used, 
+  //< it is undefined behavior in /O2 mode. Even though Chunks are initialized to 0 inside the for loop,
+  //< the Chunks actually used for histogram statistics are still garbage values, 
+  //< ultimately leading to out-of-bounds access during collection.
+  //< 
+  //< If the code is moved outside of the non-branch, there is no undefined behavior because the compiler can see its lifetime.
+  //< But this will waste stack memory of (Radix_opts_.bucket_size)
+  //< So we use (alloca)
+
+  else // if constexpr (!Is_parallel_)
+  {
+    size_t Stack_bucket_buffer_[Radix_opts_.bucket_size];
+    Chunks_ = &Stack_bucket_buffer_;
+  }
   */
-  for (Size_t i = 0; i < Size; ++i) {
-    indices_current [i] = i;
+
+  for (size_t Curr_radix_ = 0; Curr_radix_ < Radix_ - 1; ++Curr_radix_)
+  {
+    ::memset(Chunks_, 0, Buffer_size_);
+
+    LSD_integer_radix_pass_<Is_parallel_, false, Radix_opts_>(Paral_data_, Begin_, Size_, Output_, Chunks_, Curr_radix_,
+                                                              Proj_func_);
   }
-  Size_t* __restrict idx_src = indices_current.get();
-  Size_t* __restrict idx_dst = indices_next.get();
-  /*
-  Value_t** __restrict ptr_src = ptrs_current.get();
-  Value_t** __restrict ptr_dst = ptrs_next.get();
-  */
-  for (std::uint8_t Pass = 0; Pass < Radix_cp::Passes; ++Pass) {
-    std::fill(Bucket_count.begin(), Bucket_count.end(), 0);
 
-    for (Size_t i = 0; i < Size; ++i) {
-      Size_t     data_idx = idx_src [i];
-      Unsigned_t Unsigned_value =
-          std::bit_cast<Unsigned_t>(Extractor(Ptr [data_idx]));
+  {
+    ::memset(Chunks_, 0, Buffer_size_);
 
-      if constexpr (std::is_floating_point_v<Key_t> &&
-                    Radix_tp.Has_negative == HasNegative::Yes) {
-        Unsigned_value ^= (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-            ? Radix_cp::All_bits_mask
-            : Radix_cp::Sign_bit_mask;
-      } else if constexpr (std::is_signed_v<Key_t> &&
-                           Radix_tp.Has_negative == HasNegative::Yes) {
-        Unsigned_value ^= Radix_cp::Sign_bit_mask;
-      }
+    std::span<size_t> NaN_counts_span_;
 
-      std::uint16_t Byte_idx =
-          (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-          Radix_cp::Mask;
-      if constexpr (Radix_tp.Order == SortOrder::Descending)
-        Byte_idx = Radix_cp::Mask - Byte_idx;
-      ++Bucket_count [Byte_idx];
+    if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
+                  Radix_opts_.nan_pos != radix_nan_position::unhandled)
+    {
+      size_t *NaN_counts_ = static_cast<size_t *>(alloca(Threads_num_ * sizeof(size_t)));
+      ::memset(NaN_counts_, 0, Threads_num_ * sizeof(size_t));
+      NaN_counts_span_ = std::span<size_t>(NaN_counts_, Threads_num_);
     }
 
-    std::exclusive_scan(Bucket_count.begin(), Bucket_count.end(), Scanned.begin(),
-                        0, std::plus<> {});
-
-    for (Size_t i = 0; i < Size; ++i) {
-      Size_t     data_idx = idx_src [i];
-      Unsigned_t Unsigned_value =
-          std::bit_cast<Unsigned_t>(Extractor(Ptr [data_idx]));
-
-      if constexpr (std::is_floating_point_v<Key_t> &&
-                    Radix_tp.Has_negative == HasNegative::Yes) {
-        Unsigned_value ^= (Unsigned_value >> Radix_cp::Shift_of_sign_bit)
-            ? Radix_cp::All_bits_mask
-            : Radix_cp::Sign_bit_mask;
-      } else if constexpr (std::is_signed_v<Key_t> &&
-                           Radix_tp.Has_negative == HasNegative::Yes) {
-        Unsigned_value ^= Radix_cp::Sign_bit_mask;
-      }
-
-      std::uint16_t Byte_idx =
-          (Unsigned_value >> (Pass << Radix_cp::Shift_of_byte_idx)) &
-          Radix_cp::Mask;
-      if constexpr (Radix_tp.Order == SortOrder::Descending)
-        Byte_idx = Radix_cp::Mask - Byte_idx;
-
-      idx_dst [Scanned [Byte_idx]++] = data_idx;
-    }
-
-    std::swap(idx_src, idx_dst);
+    LSD_integer_radix_pass_<Is_parallel_, true, Radix_opts_>(Paral_data_, Begin_, Size_, Output_, Chunks_, Radix_ - 1,
+                                                             Proj_func_, NaN_counts_span_);
   }
-  if constexpr (true) {
-    std::unique_ptr<Value_t []> temp_buffer(new Value_t [Size]);
-    for (Size_t i = 0; i < Size; ++i) {
-      temp_buffer [i] = std::move(Ptr [idx_src [i]] /* *ptr_src[i] */);
-    }
 
-    std::move(temp_buffer.get(), temp_buffer.get() + Size, Ptr);
-  } else {
-    // slow but the space complexity is O(1)
-    for (Size_t i = 0; i < Size; ++i) {
-      while (idx_src [i] != i) {
-        Size_t target_idx = idx_src [i];
-        std::swap(Ptr [i], Ptr [target_idx]);
-        std::swap(idx_src [i], idx_src [target_idx]);
-      }
-    }
-  }
-}
-enum class SortVariant
-{
-  Improved,
-  Indexed
-};
-constexpr std::size_t L1_CACHE_SIZE = 32 * 1024;
-constexpr std::size_t L2_CACHE_SIZE = 256 * 1024;
-constexpr std::size_t L3_CACHE_SIZE = 8 * 1024 * 1024;
-
-constexpr std::size_t DATA_THRESHOLD   = 10000;
-constexpr std::size_t STRUCT_THRESHOLD = 64;
-
-template<std::size_t StructSize, bool IsPOD>
-constexpr SortVariant select_sort_variant(std::size_t data_size)
-{
-  if (IsPOD) {
-    if (StructSize <= STRUCT_THRESHOLD || data_size < DATA_THRESHOLD) {
-      return SortVariant::Indexed;
-    }
-    return SortVariant::Improved;
-  } else {
-    return StructSize <= STRUCT_THRESHOLD ? SortVariant::Improved
-                                          : SortVariant::Indexed;
+  if (Radix_ & 1)
+  {
+    std::move(Begin_, Begin_ + Size_, Output_);
   }
 }
 
-template<details::ContiguousIterator ContigIter>
-void dispatch_radix_sort(std::execution::sequenced_policy policy,
-                         ContigIter first, ContigIter last)
+template<radix_options Radix_opts_, typename Random_point_, typename Random_buffer_point_, typename Proj_functor_>
+inline void
+MSD_recursion_exit_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
+                                       size_t                                 Size_,
+                                       Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                                       size_t                                 Radix_,
+                                       Proj_functor_ const                   &Proj_func_,
+                                       [[maybe_unused]] size_t                Deep_ = 0)
 {
-  using Value_t = std::iter_value_t<ContigIter>;
+  if (Size_ == 0)
+  {
+    return;
+  }
 
-  const std::size_t     data_size   = std::distance(first, last);
-  constexpr std::size_t struct_size = sizeof(Value_t);
-  constexpr bool        is_pod      = std::is_trivially_copyable_v<Value_t>;
+  if constexpr (Radix_opts_.bucket_size == 256U)
+  {
+    Radix_ = Radix_ + 1;
+  }
+  else /*if constexpr (Radix_opts_.bucket_size == 65536U)*/
+  {
+    Radix_ = Radix_ / 2 + 1; // floor
+  }
 
-  const SortVariant variant = select_sort_variant<struct_size, is_pod>(data_size);
+  for (size_t Curr_radix_ = 0; Curr_radix_ < Radix_; ++Curr_radix_)
+  {
+    size_t Chunks_[Radix_opts_.bucket_size] {};
 
-  switch (variant) {
-  case SortVariant::Improved : break;
-  case SortVariant::Indexed  : break;
-  default :
-#ifdef __GNUC__  // GCC, Clang, ICC
-    __builtin_unreachable();
-#elif defined(_MSC_VER)  // msvc
-    __assume(false);
-#endif
+    // Histogram
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
+    {
+      ++Chunks_[Radix_key_<Radix_opts_>(Begin_[Index_], Curr_radix_, Proj_func_)];
+    });
+
+    // Prefix Sum
+    Unroll_loop_<Radix_opts_.unroll_n>(1, Radix_opts_.bucket_size, [&](size_t Index_)
+    {
+      Chunks_[Index_] += Chunks_[Index_ - 1];
+    });
+
+    //< msvc ver [19.28, 19.44] integer data type, unroll for is wrong, float-point data type is right
+    //< msvc ver >= 19.50 (VS 18.0) all arithmetic right
+
+    // Using template unrolling with strong inlining(inline __forceinline) can cause sorting of 'integer data'
+    // to generate assembly errors, leading to sorting errors, which was fixed in MSVC ver >= 19.50 (VS 18.0)
+    //
+
+    // Collect
+#if defined(_MSC_VER) && _MSC_VER <= 1950
+    size_t Index_ = 0;
+
+    for (; Radix_opts_.unroll_n <= Size_ - Index_; Index_ += Radix_opts_.unroll_n)
+    {
+      for (size_t Roll_ = 0; Roll_ < Radix_opts_.unroll_n; ++Roll_)
+      {
+        Output_[--Chunks_[Radix_key_<Radix_opts_>(Begin_[Size_ - 1 - (Index_ + Roll_)], Curr_radix_, Proj_func_)]] =
+            std::move(Begin_[Size_ - 1 - (Index_ + Roll_)]);
+      }
+    }
+
+    for (; Index_ < Size_; ++Index_)
+    {
+      Output_[--Chunks_[Radix_key_<Radix_opts_>(Begin_[Size_ - 1 - Index_], Curr_radix_, Proj_func_)]] =
+          std::move(Begin_[Size_ - 1 - Index_]);
+    }
+#else
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
+    {
+      Output_[--Chunks_[Radix_key_<Radix_opts_>(Begin_[Size_ - 1 - Index_], Curr_radix_, Proj_func_)]] =
+          std::move(Begin_[Size_ - 1 - Index_]);
+    });
+#endif // defined(_MSC_VER) && _MSC_VER <= 1950
+
+    std::swap(Begin_, Output_);
+  }
+
+  if (Radix_ & 1)
+  {
+    std::move(Begin_, Begin_ + Size_, Output_);
   }
 }
-}  // namespace experimental
-}  // namespace stdex
 
-#undef WARNING
-#undef ALWAYS_INLINE
-#undef LOOP_UNROLL
-#undef EXPAND_AND_STRINGIFY
-#undef STRINGIFY
+template<radix_options Radix_opts_, typename Random_point_, typename Random_buffer_point_, typename Proj_functor_>
+inline void
+MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
+                        size_t                                 Size_,
+                        Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                        size_t                                 Radix_,
+                        Proj_functor_ const                   &Proj_func_,
+                        size_t                                 Deep_ = 0)
+{
+  // If the chunk _Size is too small, then turn to serial least-significant-byte radix sort
+  if (Size_ <= Radix_opts_.chunk_size || Radix_ < 1)
+  {
+    return MSD_recursion_exit_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_, Deep_);
+  }
+
+  int const  Threads_num_         = omp_get_num_procs();
+  bool const Can_enable_parallel_ = Threads_num_ > 1 && !omp_in_parallel() && Size_ > Radix_opts_.chunk_size * 2;
+
+  if (!Can_enable_parallel_)
+  {
+    size_t Chunk_[Radix_opts_.bucket_size] {};
+
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
+    {
+      ++Chunk_[Radix_key_<Radix_opts_>(Begin_[Index_], Radix_, Proj_func_)];
+    });
+
+    size_t Non_empty_count_ = 0, Prev_sum_ = 0;
+
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
+    {
+      size_t Original_val_ = Chunk_[Index_];
+      Non_empty_count_ += (Original_val_ != 0);
+
+      Chunk_[Index_] += Prev_sum_;
+      Prev_sum_ = Chunk_[Index_];
+    });
+
+    if (Non_empty_count_ > 1)
+    {
+      Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
+      {
+        size_t Curr_index_ = Size_ - 1 - Index_;
+        Output_[--Chunk_[Radix_key_<Radix_opts_>(Begin_[Curr_index_], Radix_, Proj_func_)]] =
+            std::move(Begin_[Curr_index_]);
+      });
+
+      Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size - 1, [&](size_t Index_)
+      {
+        auto *New_beign_  = Begin_ + Chunk_[Index_];
+        auto *New_output_ = Output_ + Chunk_[Index_];
+
+        MSD_integer_radix_sort_<Radix_opts_>(New_output_, Chunk_[Index_ + 1] - Chunk_[Index_], New_beign_, Radix_ - 1,
+                                             Proj_func_, Deep_ + 1);
+      });
+      auto *New_beign_  = Begin_ + Chunk_[Radix_opts_.bucket_size - 1];
+      auto *New_output_ = Output_ + Chunk_[Radix_opts_.bucket_size - 1];
+      MSD_integer_radix_sort_<Radix_opts_>(New_output_, Size_ - Chunk_[Radix_opts_.bucket_size - 1], New_beign_,
+                                           Radix_ - 1, Proj_func_, Deep_ + 1);
+    }
+    else
+    {
+      // Only one non-empty bucket:
+      // all elements of the current byte have the same value, no need to reorder, directly process the next byte
+      MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, Deep_);
+    }
+    return;
+  }
+
+  Radix_chunk_context_<Radix_opts_> Chunk_ctx_;
+  Chunk_ctx_.Init_(Size_, Threads_num_);
+
+  auto *RESTRICT_KEYWORD Chunks_     = Chunk_ctx_.Chunks_;
+  auto const             Paral_data_ = Chunk_ctx_.Paral_data_;
+
+  ::memset(Chunks_, 0, Chunk_ctx_.Buffer_size_ * sizeof(size_t));
+
+#pragma omp parallel num_threads(Threads_num_)
+  {
+    int const Thread_id_ = omp_get_thread_num();
+
+    auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
+
+    Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+    {
+      ++Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Index_], Radix_, Proj_func_)];
+    });
+  }
+
+  size_t Non_empty_count_ = 0;
+
+  Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
+  {
+    size_t Last_ = Index_ ? Chunks_[Threads_num_ - 1][Index_ - 1] : 0;
+    Chunks_[0][Index_] += Last_;
+
+    for (int Thread_id_ = 1; Thread_id_ < Threads_num_; ++Thread_id_)
+    {
+      Chunks_[Thread_id_][Index_] += Chunks_[Thread_id_ - 1][Index_];
+    }
+
+    Non_empty_count_ += (Chunks_[Threads_num_ - 1][Index_] - Last_ != 0);
+  });
+
+  if (Non_empty_count_ <= 1)
+  {
+    MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, Deep_);
+    return;
+  }
+
+#pragma omp parallel num_threads(Threads_num_)
+  {
+    int const Thread_id_ = omp_get_thread_num();
+
+    auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
+
+    Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+    {
+      size_t Curr_index_ = Beg_index_ + (End_index_ - 1 - Index_);
+      Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Curr_index_], Radix_, Proj_func_)]] =
+          std::move(Begin_[Curr_index_]);
+    });
+  }
+
+#pragma omp parallel for schedule(dynamic) num_threads(Threads_num_)
+  for (int Bucket_idx_ = 0; Bucket_idx_ < static_cast<int>(Radix_opts_.bucket_size); ++Bucket_idx_)
+  {
+    size_t Chunk_begin_ = Chunks_[0][Bucket_idx_];
+    size_t Chunk_end_ =
+        (Bucket_idx_ + 1 < static_cast<int>(Radix_opts_.bucket_size)) ? Chunks_[0][Bucket_idx_ + 1] : Size_;
+    size_t Chunk_size_ = Chunk_end_ - Chunk_begin_;
+
+    if (Chunk_size_ == 0)
+    {
+      continue;
+    }
+
+    auto *New_beign_  = Begin_ + Chunk_begin_;
+    auto *New_output_ = Output_ + Chunk_begin_;
+
+    MSD_integer_radix_sort_<Radix_opts_>(New_output_, Chunk_size_, New_beign_, Radix_ - 1, Proj_func_, Deep_ + 1);
+  }
+}
+
+template<radix_options               Radix_opts_,
+         Supported_execution_policy_ Exec_policy_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
+inline void
+Radix_sort_impl_(Exec_policy_ && /*Expo_*/,
+                 Random_point_ &RESTRICT_KEYWORD        Begin_,
+                 size_t                                 Size_,
+                 Random_buffer_point_ &RESTRICT_KEYWORD Output_,
+                 size_t                                 Radix_,
+                 Proj_functor_ const                   &Proj_func_)
+{
+  using Expo_ty_ = std::remove_cvref_t<Exec_policy_>;
+
+  if constexpr (std::same_as<Expo_ty_, std::execution::sequenced_policy> or
+                std::same_as<Expo_ty_, std::execution::unsequenced_policy>)
+  {
+    if constexpr (sizeof(typename Proj_functor_::Key_ty_) > 4)
+    {
+      MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
+    }
+    else
+    {
+      if constexpr (Radix_opts_.bucket_size == 256U)
+      {
+        Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+      }
+      else /*if constexpr (Radix_opts_.bucket_size == 65536U)*/
+      {
+        Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+      }
+      LSD_integer_radix_sort_<Is_parallel_policy_v_<Expo_ty_>, Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
+    }
+  }
+  else /*if constexpr (std::same_as<Expo_ty_, std::execution::parallel_policy> or
+                     std::same_as<Expo_ty_, std::execution::parallel_unsequenced_policy>)*/
+  {
+    if constexpr (Radix_opts_.bucket_size == 256U)
+    {
+      Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+    }
+    else /*if constexpr (Radix_opts_.bucket_size == 65536U)*/
+    {
+      Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+    }
+    LSD_integer_radix_sort_<Is_parallel_policy_v_<Expo_ty_>, Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
+  }
+}
+
+template<radix_options               Radix_opts_ = radix_options {},
+         Supported_execution_policy_ Exec_policy_,
+         Random_access_iterator_     Random_iter_,
+         Standard_allocator_         Allocator_,
+         typename Key_function_ = radix_default_key_function<std::iter_value_t<Random_iter_>>>
+inline void radix_sort(Exec_policy_    &&Expo_,
+                       Random_iter_      Begin_,
+                       Random_iter_      End_,
+                       Allocator_ const &Alloc_,
+                       Key_function_   &&Key_func_ = {})
+{
+  static_assert(Radix_opts_.bucket_size == 256U || Radix_opts_.bucket_size == 65536U,
+                "Bucket size must be 256 or 65536!");
+
+  size_t Size_ = End_ - Begin_;
+
+  if (Size_ <= 1) [[unlikely]]
+  {
+    return;
+  }
+
+  // Radix sort supports sorting of floating-point type data.
+  //
+  // Because floating-point numbers may have NaN (Not a Number),
+  // and we need to support choosing the position of NaN (beginning or end),
+  // it is necessary to perform <Max_while_partition_> to partition and obtain the "index" of NaN,
+  // in order to construct the range of non-NaN data for sorting.
+
+  using Proj_functor_ = Radix_projection_functor_<Key_function_, decltype(Key_func_(*Begin_))>;
+  Proj_functor_ Proj_func_ { std::forward<Key_function_>(Key_func_) };
+  static_assert(!(Radix_opts_.bucket_size == 65536U && sizeof(typename Proj_functor_::Key_ty_) == 1),
+                "Do not set a two-byte buffer size for one-byte data!");
+
+  auto *RESTRICT_KEYWORD Primary_addr_ = &*Begin_;
+  if constexpr (Reverse_iterator_<Random_iter_>)
+  {
+    Primary_addr_ = &*End_.base();
+  }
+  constexpr auto Adjust_opts_ = Adjust_radix_options_(Radix_opts_, Is_reverse_iterator_v_<Random_iter_>);
+
+  size_t Range_left_ = 0, Range_right_ = Size_;
+  size_t Max_val_ = 0;
+
+  if constexpr (sizeof(typename Proj_functor_::Key_ty_) > 4)
+  {
+    if constexpr (std::integral<typename Proj_functor_::Key_ty_> or
+                  (std::floating_point<typename Proj_functor_::Key_ty_> and
+                   Adjust_opts_.nan_pos == radix_nan_position::unhandled))
+    {
+      Max_val_ = Max_element_<false, Adjust_opts_.unroll_n>(Primary_addr_, Size_, Proj_func_);
+    }
+    else if constexpr (Adjust_opts_.nan_pos == radix_nan_position::begin)
+    {
+      auto Max_with_part_ = Max_while_partition_(Primary_addr_, Primary_addr_ + Size_, [&](auto const &Val_)
+      {
+        return std::isnan(Proj_func_.Get_key_value_(Val_));
+      }, Proj_func_);
+
+      Range_left_ = Max_with_part_.Part_index_;
+      Max_val_    = Max_with_part_.Max_val_;
+    }
+    else /*if constexpr (Adjust_opts_.nan_pos == radix_nan_position::end)*/
+    {
+      auto Max_with_part_ = Max_while_partition_(Primary_addr_, Primary_addr_ + Size_, [&](auto const &Val_)
+      {
+        return !std::isnan(Proj_func_.Get_key_value_(Val_));
+      }, Proj_func_);
+
+      Range_right_ = Max_with_part_.Part_index_;
+      Max_val_     = Max_with_part_.Max_val_;
+    }
+
+    // If all elements are NaN or Zero, then there is no need to sort
+    if (Max_val_ == 0) [[unlikely]]
+    {
+      return;
+    }
+
+    // Calculate highest byte index
+    Max_val_ = static_cast<size_t>((std::bit_width(Max_val_) + 7) / 8 - 1);
+
+    Primary_addr_ = Primary_addr_ + Range_left_;
+  }
+
+  AllocatedBufferHolder_<Allocator_> Holder_(Range_right_ - Range_left_, Alloc_);
+  auto *RESTRICT_KEYWORD             Buffer_ = Holder_.Get_buffer_();
+
+  // If it is a floating-point number, and the "begin" or "end" enum value is selected,
+  // > for the "begin" enum value :
+  // > [0, Range_left_) is NaN range,
+  // > so let the sorting range start from "Range_left_" as the "0 starting" index,
+  // > and use the "Size_" (Range_right_) value as the "ending" index.
+  //
+  // > for the "end" enum value   :
+  // > [Range_right_, Size_) is NaN range, sort range is [0, Range_right_).
+  //
+  // Else Range_left_ = 0, Range_right_ = Size_, sort range is [0, Range_right_).
+  //
+  // So we always sort the range of non-NaN elements [0, Range_right_)
+
+  size_t const Sort_size_ = Range_right_ - Range_left_;
+  if (Sort_size_ == 0) [[unlikely]]
+  {
+    return;
+  }
+
+  Radix_sort_impl_<Adjust_opts_>(std::forward<Exec_policy_>(Expo_), Primary_addr_, Sort_size_, Buffer_, Max_val_,
+                                 Proj_func_);
+}
+
+template<radix_options               Radix_opts_ = radix_options {},
+         Supported_execution_policy_ Exec_policy_,
+         Random_access_iterator_     Random_iter_,
+         typename Key_function_ = radix_default_key_function<std::iter_value_t<Random_iter_>>>
+inline void radix_sort(Exec_policy_ &&Expo_, Random_iter_ Begin_, Random_iter_ End_, Key_function_ &&Key_func_ = {})
+{
+  using Value_type_ = typename std::iterator_traits<Random_iter_>::value_type;
+
+  radix_sort<Radix_opts_>(std::forward<Exec_policy_>(Expo_), Begin_, End_, std::allocator<Value_type_> {},
+                          std::forward<Key_function_>(Key_func_));
+}
+
+} // namespace stdex
+
+#pragma pop_macro("ALWAYS_INLINE")
+#pragma pop_macro("RESTRICT_KEYWORD")
