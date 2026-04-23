@@ -10,13 +10,15 @@
  *   - Fine‑grained control over NaN placement (beginning, end, or unhandled)
  *   - Sequential, parallel, unsequenced, and parallel_unsequenced execution policies
  *   - Custom allocators for the temporary buffer
- *   - Hybrid LSD (Least Significant Digit) / MSD (Most Significant Digit) strategy
+ *   - Explicit selection of LSD (Least Significant Digit) or MSD (Most Significant Digit)
+ *     via radix_options::sort_mode (default = LSD)
  *   - Loop unrolling, cache‑friendly bucket processing, and OpenMP parallelism
  *
- * The implementation automatically selects between LSD and MSD based on the key type
- * size and the chosen execution policy. For 32‑bit keys (or smaller) LSD is used;
- * for 64‑bit keys MSD recursion is preferred when the execution policy allows it.
- * Both strategies can be forced via the `radix_options` structure.
+ * The user can choose the sorting strategy via radix_options::sort_mode (lsd or msd).
+ * LSD is generally faster for uniformly distributed data and small key types,
+ * while MSD can be more cache‑efficient for 64‑bit keys and allows early exit
+ * when many elements share the same high‑order digits. The implementation does
+ * not automatically switch between strategies; the choice is explicit.
  *
  *
  * DESIGN & IMPLEMENTATION NOTES
@@ -33,14 +35,16 @@
  * 2. Radix Digit Selection
  *    - Two bucket sizes are supported: 256 (8‑bit digit) and 65536 (16‑bit digit).
  *    - Smaller bucket size reduces memory traffic but increases the number of passes.
- *    - The number of passes is `sizeof(key_type)` for LSD (when bucket size == 256)
- *      or `sizeof(key_type)/2` for 16‑bit LSD. MSD recursion uses one pass per digit.
+ *    - LSD: number of passes = sizeof(key_type) (for 8‑bit) or sizeof(key_type)/2 (for 16‑bit).
+ *    - MSD: one pass per digit, with recursion depth = number of digits.
  *
  * 3. Parallelism Strategy
  *    - OpenMP is used for both histogramming and scattering.
  *    - The input range is partitioned into nearly equal chunks per thread.
  *    - Histograms are private per thread and then merged with a parallel prefix sum.
  *    - MSD recursion parallelizes over independent buckets after the first digit pass.
+ *    - For MSVC with native OpenMP 2.0, workarounds (e.g., critical sections for reductions)
+ *      are used where needed.
  *
  * 4. Memory Management
  *    - A temporary buffer of the same size as the input range is allocated using the
@@ -52,9 +56,9 @@
  *
  * 5. Floating‑Point & NaN Handling
  *    - NaNs are detected via `std::isnan`. When `nan_pos` is `begin` or `end`, a
- *      partitioning step moves all NaNs to the chosen side before sorting the non‑NaN
- *      elements. This preserves the relative order of NaNs (which are all considered
- *      equal by the sorting key).
+ *      partitioning step (performed while computing the maximum key) moves all NaNs
+ *      to the chosen side before sorting the non‑NaN elements. This preserves the
+ *      relative order of NaNs (which are all considered equal by the sorting key).
  *    - Infinity values are handled correctly because their bit patterns are ordered
  *      after the sign‑flip transformation.
  *
@@ -64,23 +68,29 @@
  *    - `ALWAYS_INLINE` for critical small functions.
  *    - Trivial type detection avoids unnecessary construction/destruction in buffers.
  *    - Early exit when only one non‑empty bucket exists.
- *    - MSD recursion uses a threshold (`chunk_size`) to switch to LSD for small
- *      sub‑problems, reducing recursion overhead.
+ *    - MSD recursion uses a threshold (`chunk_size`) to switch to a multi‑pass LSD‑like
+ *      fallback for small sub‑problems, reducing recursion overhead.
  *
  *
  * USAGE EXAMPLES
  * --------------
  *
- * Basic ascending sort with default execution policy (sequential):
+ * Basic ascending sort with default execution policy (sequential, LSD):
  *   std::vector<int> v = {5, 2, 8, 1};
  *   stdex::radix_sort(std::execution::seq, v.begin(), v.end());
  *
- * Parallel descending sort for floats, placing NaNs at the end:
+ * Parallel descending sort for floats, placing NaNs at the end, using LSD:
  *   constexpr stdex::radix_options opts {
  *      .sort_order = stdex::radix_sort_order::desc,
  *      .nan_pos    = stdex::radix_nan_position::end,
- *   }
+ *   };
  *   stdex::radix_sort<opts>(std::execution::par, v.begin(), v.end());
+ *
+ * Explicitly use MSD (Most Significant Digit) for 64‑bit integers:
+ *   constexpr stdex::radix_options msd_opts {
+ *      .sort_mode = stdex::radix_options::msd
+ *   };
+ *   stdex::radix_sort<msd_opts>(std::execution::par, v.begin(), v.end());
  *
  * Using a custom key projection (e.g., sort by absolute value):
  *   auto abs_key = [](double x) { return std::fabs(x); };
@@ -104,21 +114,24 @@
  *   enum class radix_nan_position { unhandled, begin, end };
  *
  *   struct radix_options {
- *     uint8_t  unroll_n    = 8;      // loop unroll factor
- *     uint16_t bucket_size = 256;    // 256 or 65536
- *     uint32_t chunk_size  = 256*256;// threshold for MSD→LSD fallback
+ *     enum mode { lsd, msd };
+ *     mode         sort_mode   = lsd;      // LSD or MSD strategy
+ *     uint8_t      unroll_n    = 8;        // loop unroll factor
+ *     uint16_t     bucket_size = 256;      // 256 or 65536
+ *     uint32_t     chunk_size  = 256*256;  // threshold for MSD→LSD fallback
  *     radix_sort_order   sort_order = asc;
  *     radix_nan_position nan_pos    = unhandled;
  *   };
  *
+ *   // Overloads with explicit allocator
  *   template<radix_options opts = radix_options{},
  *            class ExecPolicy,
  *            RandomAccessIterator Iter,
- *            class Allocator = std::allocator<std::iter_value_t<Iter>>,
+ *            class Allocator,
  *            class KeyFunc = radix_default_key_function<std::iter_value_t<Iter>>>
  *   void radix_sort(ExecPolicy&& policy,
  *                   Iter first, Iter last,
- *                   const Allocator& alloc = Allocator(),
+ *                   const Allocator& alloc,
  *                   KeyFunc&& key_func = {});
  *
  *   // Overload without explicit allocator (uses std::allocator)
@@ -127,6 +140,15 @@
  *            RandomAccessIterator Iter,
  *            class KeyFunc = radix_default_key_function<std::iter_value_t<Iter>>>
  *   void radix_sort(ExecPolicy&& policy, Iter first, Iter last, KeyFunc&& key_func = {});
+ *
+ *   // Container overloads
+ *   template<radix_options opts = radix_options{},
+ *            class ExecPolicy, class Container, class KeyFunc = ...>
+ *   void radix_sort(ExecPolicy&& policy, Container& c, KeyFunc&& key_func = {});
+ *
+ *   template<radix_options opts = radix_options{},
+ *            class Container, class KeyFunc = ...>
+ *   void radix_sort(Container& c, KeyFunc&& key_func = {});
  * }
  *
  * Supported execution policies:
@@ -205,8 +227,14 @@ struct radix_default_key_function
 
 struct radix_options
 {
-  uint8_t            unroll_n    = 8U;
-  uint16_t           bucket_size = 256U;
+  enum mode
+  {
+    lsd,
+    msd
+  } sort_mode { lsd };
+
+  uint32_t           unroll_n    = 8U;
+  uint32_t           bucket_size = 256U;
   uint32_t           chunk_size  = 256U * 256U;
   radix_sort_order   sort_order  = radix_sort_order::asc;
   radix_nan_position nan_pos     = radix_nan_position::unhandled;
@@ -255,6 +283,12 @@ concept Invocable_key_function_ = std::invocable<Func_, Ty_ const &> && !std::in
 
 template<typename Iter_>
 concept Random_access_iterator_ = std::random_access_iterator<Iter_>;
+
+template<typename T>
+concept Random_access_range_ = requires (T &t) {
+  { t.begin() } -> Random_access_iterator_;
+  { t.end() } -> Random_access_iterator_;
+};
 
 template<typename>
 struct Is_reverse_iterator_ : std::false_type
@@ -359,8 +393,8 @@ Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_
 
   if constexpr (Is_parallel_)
   {
-    int Actual_threads_ = omp_get_num_procs();
 #if defined(_MSC_VER) && !defined(_OPENMP_LLVM_RUNTIME)
+    int Actual_threads_ = omp_get_max_threads();
 #  pragma omp parallel num_threads(Actual_threads_)
     {
       auto Local_val_ = Max_val_;
@@ -384,7 +418,7 @@ Max_element_(Random_point_ Begin_, size_t Size_, Proj_functor_ const &Proj_func_
       }
     }
 #else /* GNU, Clang, MSVC(/openmp:llvm) */
-#  pragma omp parallel for reduction(max : Max_val_) num_threads(Actual_threads_)
+#  pragma omp parallel for reduction(max : Max_val_)
     for (size_t Index_ = 0; Index_ < Size_; ++Index_)
     {
       if (auto const Current_val_ = Proj_func_(Begin_[Index_]); Current_val_ > Max_val_)
@@ -827,14 +861,7 @@ Radix_lsd_collect_(Random_point_ &RESTRICT_KEYWORD        Begin_,
     {
       if (std::isnan(Proj_func_.Get_key_value_(Begin_[Index_]))) [[unlikely]]
       {
-        if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
-        {
-          Output_[--NaN_offset_] = std::move(Begin_[Index_]);
-        }
-        else if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)
-        {
-          Output_[Size_ - NaN_offset_--] = std::move(Begin_[Index_]);
-        }
+        Output_[--NaN_offset_] = std::move(Begin_[Index_]);
         return;
       }
     }
@@ -881,11 +908,14 @@ LSD_integer_radix_pass_(Radix_parallel_data_                   Paral_data_,
                         size_t (*const Chunks_)[Radix_opts_.bucket_size],
                         size_t                             Radix_,
                         Proj_functor_ const               &Proj_func_,
-                        [[maybe_unused]] std::span<size_t> NaN_counts_ = {})
+                        [[maybe_unused]] std::span<size_t> NaN_counts_  = {},
+                        [[maybe_unused]] std::span<size_t> NaN_offsets_ = {})
 {
+  bool Need_collect_ = true;
+
   if constexpr (Is_parallel_)
   {
-#pragma omp parallel num_threads(Paral_data_.Threads_num_)
+#pragma omp parallel if (Paral_data_.Threads_num_ > 1)
     {
       int const Thread_id_ = omp_get_thread_num();
 
@@ -896,6 +926,76 @@ LSD_integer_radix_pass_(Radix_parallel_data_                   Paral_data_,
         Radix_lsd_histogram_<Is_lass_pass_, Radix_opts_>(Begin_[Index_], Chunks_, Thread_id_, Radix_, Proj_func_,
                                                          NaN_counts_);
       });
+
+#pragma omp barrier
+#pragma omp single
+      {
+        if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
+                      Radix_opts_.nan_pos != radix_nan_position::unhandled and Is_lass_pass_)
+        {
+          size_t Prefix_NaN_count_ = 0;
+          for (size_t Thread_id_ = 0; Thread_id_ < static_cast<size_t>(Paral_data_.Threads_num_); ++Thread_id_)
+          {
+            Prefix_NaN_count_ += NaN_counts_[Thread_id_];
+            NaN_offsets_[Thread_id_] = Prefix_NaN_count_;
+          }
+
+          if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
+          {
+            for (size_t Thread_id_ = 0; Thread_id_ < static_cast<size_t>(Paral_data_.Threads_num_); ++Thread_id_)
+            {
+              Chunks_[Thread_id_][0] += NaN_counts_[Thread_id_];
+            }
+          }
+          else if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)
+          {
+            size_t const NaN_base_ = Size_ - Prefix_NaN_count_;
+            for (size_t Thread_id_ = 0; Thread_id_ < static_cast<size_t>(Paral_data_.Threads_num_); ++Thread_id_)
+            {
+              NaN_offsets_[Thread_id_] += NaN_base_;
+            }
+          }
+        }
+
+        size_t Non_empty_count_ = 0;
+        Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
+        {
+          size_t Last_ = Index_ ? Chunks_[Paral_data_.Threads_num_ - 1][Index_ - 1] : 0;
+          Chunks_[0][Index_] += Last_;
+
+          for (size_t Local_thread_id_ = 1; Local_thread_id_ < static_cast<size_t>(Paral_data_.Threads_num_);
+               ++Local_thread_id_)
+          {
+            Chunks_[Local_thread_id_][Index_] += Chunks_[Local_thread_id_ - 1][Index_];
+          }
+
+          Non_empty_count_ += (Chunks_[Paral_data_.Threads_num_ - 1][Index_] - Last_ != 0);
+        });
+
+        Need_collect_ = Non_empty_count_ > 1;
+      }
+#pragma omp barrier
+
+      if (Need_collect_)
+      {
+        size_t Thread_nan_offset_ = 0;
+        if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
+                      Radix_opts_.nan_pos != radix_nan_position::unhandled and Is_lass_pass_)
+        {
+          Thread_nan_offset_ = NaN_offsets_[Thread_id_];
+        }
+
+        Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+        {
+          Radix_lsd_collect_<Is_lass_pass_, Radix_opts_>(Begin_, Size_, Beg_index_ + (End_index_ - 1 - Index_), Output_,
+                                                         Chunks_, Thread_id_, Radix_, Proj_func_, Thread_nan_offset_);
+        });
+      }
+    }
+
+    if (!Need_collect_)
+    {
+      return;
     }
   }
   else
@@ -904,67 +1004,47 @@ LSD_integer_radix_pass_(Radix_parallel_data_                   Paral_data_,
     {
       Radix_lsd_histogram_<Is_lass_pass_, Radix_opts_>(Begin_[Index_], Chunks_, 0, Radix_, Proj_func_, NaN_counts_);
     });
-  }
 
-#pragma region PREFIX_SUM
-
-  size_t NaN_offset_ = 0;
-  if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
-                Radix_opts_.nan_pos != radix_nan_position::unhandled and Is_lass_pass_)
-  {
-    NaN_offset_ = std::reduce(NaN_counts_.begin(), NaN_counts_.end());
-
-    if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
+    if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
+                  Radix_opts_.nan_pos != radix_nan_position::unhandled and Is_lass_pass_)
     {
-      for (size_t Thread_id_ = 0; Thread_id_ < Paral_data_.Threads_num_; ++Thread_id_)
+      size_t Prefix_NaN_count_ = NaN_counts_[0];
+      NaN_offsets_[0]          = Prefix_NaN_count_;
+
+      if constexpr (Radix_opts_.nan_pos == radix_nan_position::begin)
       {
-        Chunks_[Thread_id_][0] += NaN_counts_[Thread_id_];
+        Chunks_[0][0] += NaN_counts_[0];
+      }
+      else if constexpr (Radix_opts_.nan_pos == radix_nan_position::end)
+      {
+        NaN_offsets_[0] += (Size_ - Prefix_NaN_count_);
       }
     }
-  }
-  size_t Non_empty_count_ = 0;
 
-  Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
-  {
-    size_t Last_ = Index_ ? Chunks_[Paral_data_.Threads_num_ - 1][Index_ - 1] : 0;
-    Chunks_[0][Index_] += Last_;
-
-    for (size_t Thread_id_ = 1; Thread_id_ < Paral_data_.Threads_num_; ++Thread_id_)
+    size_t Non_empty_count_ = 0;
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
     {
-      Chunks_[Thread_id_][Index_] += Chunks_[Thread_id_ - 1][Index_];
+      size_t Last_ = Index_ ? Chunks_[0][Index_ - 1] : 0;
+      Chunks_[0][Index_] += Last_;
+      Non_empty_count_ += (Chunks_[0][Index_] - Last_ != 0);
+    });
+
+    if (Non_empty_count_ <= 1)
+    {
+      return;
     }
 
-    Non_empty_count_ += (Chunks_[Paral_data_.Threads_num_ - 1][Index_] - Last_);
-  });
-
-  if (Non_empty_count_ <= 1)
-  {
-    return;
-  }
-
-#pragma endregion PREFIX_SUM
-
-  if constexpr (Is_parallel_)
-  {
-#pragma omp parallel num_threads(Paral_data_.Threads_num_)
+    size_t Local_nan_offset_ = 0;
+    if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
+                  Radix_opts_.nan_pos != radix_nan_position::unhandled and Is_lass_pass_)
     {
-      int const Thread_id_ = omp_get_thread_num();
-
-      auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
-
-      Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
-      {
-        Radix_lsd_collect_<Is_lass_pass_, Radix_opts_>(Begin_, Size_, Beg_index_ + (End_index_ - 1 - Index_), Output_,
-                                                       Chunks_, Thread_id_, Radix_, Proj_func_, NaN_offset_);
-      });
+      Local_nan_offset_ = NaN_offsets_[0];
     }
-  }
-  else
-  {
+
     Unroll_loop_<Radix_opts_.unroll_n>(0, Size_, [&](size_t Index_)
     {
       Radix_lsd_collect_<Is_lass_pass_, Radix_opts_>(Begin_, Size_, Size_ - 1 - Index_, Output_, Chunks_, 0, Radix_,
-                                                     Proj_func_, NaN_offset_);
+                                                     Proj_func_, Local_nan_offset_);
     });
   }
 
@@ -991,7 +1071,7 @@ LSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
   int Threads_num_ = 1;
   if constexpr (Is_parallel_)
   {
-    Threads_num_ = omp_get_num_procs();
+    Threads_num_ = omp_get_max_threads();
   }
 
   Radix_chunk_context_<Radix_opts_> Chunk_ctx_;
@@ -1031,17 +1111,21 @@ LSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
     ::memset(Chunks_, 0, Buffer_size_);
 
     std::span<size_t> NaN_counts_span_;
+    std::span<size_t> NaN_offsets_span_;
 
     if constexpr (std::floating_point<typename Proj_functor_::Key_ty_> and
                   Radix_opts_.nan_pos != radix_nan_position::unhandled)
     {
-      size_t *NaN_counts_ = static_cast<size_t *>(alloca(Threads_num_ * sizeof(size_t)));
+      size_t *NaN_counts_  = static_cast<size_t *>(alloca(Threads_num_ * sizeof(size_t)));
+      size_t *NaN_offsets_ = static_cast<size_t *>(alloca(Threads_num_ * sizeof(size_t)));
       ::memset(NaN_counts_, 0, Threads_num_ * sizeof(size_t));
-      NaN_counts_span_ = std::span<size_t>(NaN_counts_, Threads_num_);
+      ::memset(NaN_offsets_, 0, Threads_num_ * sizeof(size_t));
+      NaN_counts_span_  = std::span<size_t>(NaN_counts_, Threads_num_);
+      NaN_offsets_span_ = std::span<size_t>(NaN_offsets_, Threads_num_);
     }
 
     LSD_integer_radix_pass_<Is_parallel_, true, Radix_opts_>(Paral_data_, Begin_, Size_, Output_, Chunks_, Radix_ - 1,
-                                                             Proj_func_, NaN_counts_span_);
+                                                             Proj_func_, NaN_counts_span_, NaN_offsets_span_);
   }
 
   if (Radix_ & 1)
@@ -1131,7 +1215,11 @@ MSD_recursion_exit_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Be
   }
 }
 
-template<radix_options Radix_opts_, typename Random_point_, typename Random_buffer_point_, typename Proj_functor_>
+template<bool          Is_parallel_,
+         radix_options Radix_opts_,
+         typename Random_point_,
+         typename Random_buffer_point_,
+         typename Proj_functor_>
 inline void
 MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
                         size_t                                 Size_,
@@ -1146,10 +1234,18 @@ MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
     return MSD_recursion_exit_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_, Deep_);
   }
 
-  int const  Threads_num_         = omp_get_num_procs();
-  bool const Can_enable_parallel_ = Threads_num_ > 1 && !omp_in_parallel() && Size_ > Radix_opts_.chunk_size * 2;
+  if constexpr (Is_parallel_)
+  {
+    // Avoid nested team creation overhead in recursive calls.
+    if (omp_in_parallel())
+    {
+      return MSD_integer_radix_sort_<false, Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_, Deep_);
+    }
+  }
 
-  if (!Can_enable_parallel_)
+  // bool const Can_enable_parallel_ = Threads_num_ > 1 && !omp_in_parallel() && Size_ > Radix_opts_.chunk_size * 2;
+
+  if constexpr (!Is_parallel_)
   {
     size_t Chunk_[Radix_opts_.bucket_size] {};
 
@@ -1183,95 +1279,99 @@ MSD_integer_radix_sort_(Random_point_ &RESTRICT_KEYWORD        Begin_,
         auto *New_beign_  = Begin_ + Chunk_[Index_];
         auto *New_output_ = Output_ + Chunk_[Index_];
 
-        MSD_integer_radix_sort_<Radix_opts_>(New_output_, Chunk_[Index_ + 1] - Chunk_[Index_], New_beign_, Radix_ - 1,
-                                             Proj_func_, Deep_ + 1);
+        MSD_integer_radix_sort_<Is_parallel_, Radix_opts_>(New_output_, Chunk_[Index_ + 1] - Chunk_[Index_], New_beign_,
+                                                           Radix_ - 1, Proj_func_, Deep_ + 1);
       });
       auto *New_beign_  = Begin_ + Chunk_[Radix_opts_.bucket_size - 1];
       auto *New_output_ = Output_ + Chunk_[Radix_opts_.bucket_size - 1];
-      MSD_integer_radix_sort_<Radix_opts_>(New_output_, Size_ - Chunk_[Radix_opts_.bucket_size - 1], New_beign_,
-                                           Radix_ - 1, Proj_func_, Deep_ + 1);
+      MSD_integer_radix_sort_<Is_parallel_, Radix_opts_>(New_output_, Size_ - Chunk_[Radix_opts_.bucket_size - 1],
+                                                         New_beign_, Radix_ - 1, Proj_func_, Deep_ + 1);
     }
     else
     {
       // Only one non-empty bucket:
       // all elements of the current byte have the same value, no need to reorder, directly process the next byte
-      MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, Deep_);
+      MSD_integer_radix_sort_<Is_parallel_, Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, Deep_);
     }
     return;
   }
-
-  Radix_chunk_context_<Radix_opts_> Chunk_ctx_;
-  Chunk_ctx_.Init_(Size_, Threads_num_);
-
-  auto *RESTRICT_KEYWORD Chunks_     = Chunk_ctx_.Chunks_;
-  auto const             Paral_data_ = Chunk_ctx_.Paral_data_;
-
-  ::memset(Chunks_, 0, Chunk_ctx_.Buffer_size_ * sizeof(size_t));
-
-#pragma omp parallel num_threads(Threads_num_)
+  else
   {
-    int const Thread_id_ = omp_get_thread_num();
+    int const                         Threads_num_ = omp_get_max_threads();
+    Radix_chunk_context_<Radix_opts_> Chunk_ctx_;
+    Chunk_ctx_.Init_(Size_, Threads_num_);
 
-    auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
+    auto *RESTRICT_KEYWORD Chunks_     = Chunk_ctx_.Chunks_;
+    auto const             Paral_data_ = Chunk_ctx_.Paral_data_;
 
-    Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+    ::memset(Chunks_, 0, Chunk_ctx_.Buffer_size_ * sizeof(size_t));
+
+#pragma omp parallel if (Threads_num_ > 1)
     {
-      ++Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Index_], Radix_, Proj_func_)];
-    });
-  }
+      int const Thread_id_ = omp_get_thread_num();
 
-  size_t Non_empty_count_ = 0;
+      auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
 
-  Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
-  {
-    size_t Last_ = Index_ ? Chunks_[Threads_num_ - 1][Index_ - 1] : 0;
-    Chunks_[0][Index_] += Last_;
-
-    for (int Thread_id_ = 1; Thread_id_ < Threads_num_; ++Thread_id_)
-    {
-      Chunks_[Thread_id_][Index_] += Chunks_[Thread_id_ - 1][Index_];
+      Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+      {
+        ++Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Index_], Radix_, Proj_func_)];
+      });
     }
 
-    Non_empty_count_ += (Chunks_[Threads_num_ - 1][Index_] - Last_ != 0);
-  });
+    size_t Non_empty_count_ = 0;
 
-  if (Non_empty_count_ <= 1)
-  {
-    MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, Deep_);
-    return;
-  }
-
-#pragma omp parallel num_threads(Threads_num_)
-  {
-    int const Thread_id_ = omp_get_thread_num();
-
-    auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
-
-    Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+    Unroll_loop_<Radix_opts_.unroll_n>(0, Radix_opts_.bucket_size, [&](size_t Index_)
     {
-      size_t Curr_index_ = Beg_index_ + (End_index_ - 1 - Index_);
-      Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Curr_index_], Radix_, Proj_func_)]] =
-          std::move(Begin_[Curr_index_]);
+      size_t Last_ = Index_ ? Chunks_[Threads_num_ - 1][Index_ - 1] : 0;
+      Chunks_[0][Index_] += Last_;
+
+      for (int Thread_id_ = 1; Thread_id_ < Threads_num_; ++Thread_id_)
+      {
+        Chunks_[Thread_id_][Index_] += Chunks_[Thread_id_ - 1][Index_];
+      }
+
+      Non_empty_count_ += (Chunks_[Threads_num_ - 1][Index_] - Last_ != 0);
     });
-  }
 
-#pragma omp parallel for schedule(dynamic) num_threads(Threads_num_)
-  for (int Bucket_idx_ = 0; Bucket_idx_ < static_cast<int>(Radix_opts_.bucket_size); ++Bucket_idx_)
-  {
-    size_t Chunk_begin_ = Chunks_[0][Bucket_idx_];
-    size_t Chunk_end_ =
-        (Bucket_idx_ + 1 < static_cast<int>(Radix_opts_.bucket_size)) ? Chunks_[0][Bucket_idx_ + 1] : Size_;
-    size_t Chunk_size_ = Chunk_end_ - Chunk_begin_;
-
-    if (Chunk_size_ == 0)
+    if (Non_empty_count_ <= 1)
     {
-      continue;
+      MSD_integer_radix_sort_<Is_parallel_, Radix_opts_>(Begin_, Size_, Output_, Radix_ - 1, Proj_func_, Deep_);
+      return;
     }
 
-    auto *New_beign_  = Begin_ + Chunk_begin_;
-    auto *New_output_ = Output_ + Chunk_begin_;
+#pragma omp parallel if (Threads_num_ > 1)
+    {
+      int const Thread_id_ = omp_get_thread_num();
 
-    MSD_integer_radix_sort_<Radix_opts_>(New_output_, Chunk_size_, New_beign_, Radix_ - 1, Proj_func_, Deep_ + 1);
+      auto [Beg_index_, End_index_] = Radix_compute_task_indices_(Thread_id_, Paral_data_.Step_, Paral_data_.Remain_);
+
+      Unroll_loop_<Radix_opts_.unroll_n>(Beg_index_, End_index_, [&](size_t Index_)
+      {
+        size_t Curr_index_ = Beg_index_ + (End_index_ - 1 - Index_);
+        Output_[--Chunks_[Thread_id_][Radix_key_<Radix_opts_>(Begin_[Curr_index_], Radix_, Proj_func_)]] =
+            std::move(Begin_[Curr_index_]);
+      });
+    }
+
+#pragma omp parallel for schedule(guided, 1) if (Threads_num_ > 1)
+    for (int Bucket_idx_ = 0; Bucket_idx_ < static_cast<int>(Radix_opts_.bucket_size); ++Bucket_idx_)
+    {
+      size_t Chunk_begin_ = Chunks_[0][Bucket_idx_];
+      size_t Chunk_end_ =
+          (Bucket_idx_ + 1 < static_cast<int>(Radix_opts_.bucket_size)) ? Chunks_[0][Bucket_idx_ + 1] : Size_;
+      size_t Chunk_size_ = Chunk_end_ - Chunk_begin_;
+
+      if (Chunk_size_ == 0)
+      {
+        continue;
+      }
+
+      auto *New_beign_  = Begin_ + Chunk_begin_;
+      auto *New_output_ = Output_ + Chunk_begin_;
+
+      MSD_integer_radix_sort_<Is_parallel_, Radix_opts_>(New_output_, Chunk_size_, New_beign_, Radix_ - 1, Proj_func_,
+                                                         Deep_ + 1);
+    }
   }
 }
 
@@ -1289,29 +1389,11 @@ Radix_sort_impl_(Exec_policy_ && /*Expo_*/,
                  Proj_functor_ const                   &Proj_func_)
 {
   using Expo_ty_ = std::remove_cvref_t<Exec_policy_>;
-
-  if constexpr (std::same_as<Expo_ty_, std::execution::sequenced_policy> or
-                std::same_as<Expo_ty_, std::execution::unsequenced_policy>)
+  if constexpr (Radix_opts_.sort_mode == radix_options::msd)
   {
-    if constexpr (sizeof(typename Proj_functor_::Key_ty_) > 4)
-    {
-      MSD_integer_radix_sort_<Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
-    }
-    else
-    {
-      if constexpr (Radix_opts_.bucket_size == 256U)
-      {
-        Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
-      }
-      else /*if constexpr (Radix_opts_.bucket_size == 65536U)*/
-      {
-        Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
-      }
-      LSD_integer_radix_sort_<Is_parallel_policy_v_<Expo_ty_>, Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
-    }
+    MSD_integer_radix_sort_<Is_parallel_policy_v_<Expo_ty_>, Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
   }
-  else /*if constexpr (std::same_as<Expo_ty_, std::execution::parallel_policy> or
-                     std::same_as<Expo_ty_, std::execution::parallel_unsequenced_policy>)*/
+  else
   {
     if constexpr (Radix_opts_.bucket_size == 256U)
     {
@@ -1319,8 +1401,9 @@ Radix_sort_impl_(Exec_policy_ && /*Expo_*/,
     }
     else /*if constexpr (Radix_opts_.bucket_size == 65536U)*/
     {
-      Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_);
+      Radix_ = sizeof(typename Proj_functor_::Unsigned_ty_) / 2;
     }
+
     LSD_integer_radix_sort_<Is_parallel_policy_v_<Expo_ty_>, Radix_opts_>(Begin_, Size_, Output_, Radix_, Proj_func_);
   }
 }
@@ -1435,16 +1518,45 @@ inline void radix_sort(Exec_policy_    &&Expo_,
                                  Proj_func_);
 }
 
-template<radix_options               Radix_opts_ = radix_options {},
-         Supported_execution_policy_ Exec_policy_,
-         Random_access_iterator_     Random_iter_,
+template<radix_options Radix_opts_ = radix_options {},
+         typename Exec_policy_,
+         typename Random_iter_,
          typename Key_function_ = radix_default_key_function<std::iter_value_t<Random_iter_>>>
+requires Supported_execution_policy_<Exec_policy_> && Random_access_iterator_<Random_iter_>
 inline void radix_sort(Exec_policy_ &&Expo_, Random_iter_ Begin_, Random_iter_ End_, Key_function_ &&Key_func_ = {})
 {
   using Value_type_ = typename std::iterator_traits<Random_iter_>::value_type;
-
   radix_sort<Radix_opts_>(std::forward<Exec_policy_>(Expo_), Begin_, End_, std::allocator<Value_type_> {},
                           std::forward<Key_function_>(Key_func_));
+}
+
+template<radix_options Radix_opts_ = radix_options {},
+         typename Random_iter_,
+         typename Key_function_ = radix_default_key_function<std::iter_value_t<Random_iter_>>>
+requires Random_access_iterator_<Random_iter_>
+inline void radix_sort(Random_iter_ Begin_, Random_iter_ End_, Key_function_ &&Key_func_ = {})
+{
+  radix_sort<Radix_opts_>(std::execution::seq, Begin_, End_, std::forward<Key_function_>(Key_func_));
+}
+
+template<radix_options Radix_opts_ = radix_options {},
+         typename Exec_policy_,
+         typename Container_,
+         typename Key_function_ = radix_default_key_function<typename Container_::value_type>>
+requires Supported_execution_policy_<Exec_policy_> && Random_access_range_<Container_>
+inline void radix_sort(Exec_policy_ &&Expo_, Container_ &C_, Key_function_ &&Key_func_ = {})
+{
+  radix_sort<Radix_opts_>(std::forward<Exec_policy_>(Expo_), std::begin(C_), std::end(C_),
+                          std::forward<Key_function_>(Key_func_));
+}
+
+template<radix_options Radix_opts_ = radix_options {},
+         typename Container_,
+         typename Key_function_ = radix_default_key_function<typename Container_::value_type>>
+requires Random_access_range_<Container_>
+inline void radix_sort(Container_ &C_, Key_function_ &&Key_func_ = {})
+{
+  radix_sort<Radix_opts_>(std::execution::seq, C_, std::forward<Key_function_>(Key_func_));
 }
 
 } // namespace stdex

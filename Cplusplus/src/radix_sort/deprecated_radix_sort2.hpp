@@ -41,7 +41,7 @@
 #  define ALWAYS_INLINE inline
 #endif
 
-namespace stdex {
+namespace stdexx {
 
 enum class SortOrder
 {
