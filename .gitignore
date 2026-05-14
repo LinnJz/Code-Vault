@@ -10,6 +10,7 @@
 **/.venv
 **/out
 **/cpp_new_features-main
+**/games101
 
 # redis rdb
 *.rdb
