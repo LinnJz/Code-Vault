@@ -1,5 +1,6 @@
 class Solution {
 public:
+	// 前后缀扫描
      int maxProduct(vector<int>& nums) {
         int result = nums[0], prefix = 0, suffix = 0;
 
@@ -11,12 +12,13 @@ public:
         }
         return result;
     }
+	// 动态规划
     int maxProduct(vector<int>& nums) {
         int result = nums[0], posi = nums[0], nega = nums[0];
 
         for(int i = 1; i < nums.size(); ++i) {
             int temp = posi;
-            posi = std::max({nums[i], nums[i] * posi, nums[i] * nega});
+            posi = std::max({nums[i], nums[i] * temp, nums[i] * nega});
             nega = std::min({nums[i], nums[i] * temp, nums[i] * nega});
             
             result = std::max({result, posi, nega});

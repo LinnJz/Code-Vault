@@ -1,4 +1,76 @@
 ﻿
+// 队列始终维护递减的第几大数字
+vector<int> maxSlidingWindow(vector<int>& nums, int k) {
+	// 预分配 vector 模拟队列，容量固定为 nums.size()（足够，不会越界）
+	int *q = reinterpret_cast<int *>(::alloca(nums.size() * sizeof(int)));
+	int head = 0, tail = 0;  // [head, tail) 为有效区间
+	
+	// 初始化前 k 个元素
+	for (int i = 0; i < k; ++i) {
+		 // 弹出队尾所有小于当前值的元素
+		while (head < tail && nums[i] > q[tail - 1]) --tail;
+		q[tail++] = nums[i];
+	}
+	std::vector<int> result; result.reserve(nums.size() - k + 1);
+	result.emplace_back(q[head]); // 第一个窗口最大值
+
+	for (int i = k; i < nums.size(); ++i) {
+		// 若窗口左边界值等于队首元素，则队首出队（逻辑删除）
+		if (head < tail && nums[i - k] == q[head]) ++head;
+
+		// 维护单调递减队列：弹出队尾所有小于当前值的元素
+		while (head < tail && nums[i] > q[tail - 1]) --tail;
+		q[tail++] = nums[i];
+
+		result.emplace_back(q[head]);
+	}
+	return result;
+}
+// 观察题目给定例子，滑动窗口移动过程
+// 1 2 3
+//   4 5 6
+// 观察它很像一个队列，我们需要做到是 每次移动都头部pop，尾部push，然后求队列最大值
+// 队列应该怎么设置，优先队列无法pop正确的位置，因为堆顶是最大值，你要pop首部元素
+// 所以使用单调队列始终维护最大值
+vector<int> maxSlidingWindow(vector<int>& nums, int k) {
+	std::vector<int> result; result.reserve(nums.size() - k + 1);
+	std::deque<int> q;
+
+	for (int i = 0; i < nums.size(); ++i) {
+
+		// 如果使用连续内存模拟queue
+		// while (head < tail && q[head] < i - k + 1)
+		// while (head < tail && nums[q[tail - 1]] < nums[i])
+			
+		while (!q.empty() && (i - k + 1) > q.front()) q.pop_front(); 
+		while (!q.empty() && nums[q.back()] < nums[i]) q.pop_back(); 
+
+		q.emplace_back(i);
+		if (i >= k - 1) {
+			result.emplace_back(nums[q.front()]);
+		}
+	}
+	return result;
+}
+vector<int> maxSlidingWindow(vector<int>& nums, int k) {
+	std::deque<int> q;
+	for (int i = 0; i < k; ++i) {
+		while (!q.empty() && nums[i] > q.back()) q.pop_back();
+		q.emplace_back(nums[i]);
+	}
+	std::vector<int> result; result.reserve(nums.size() - k + 1);
+	result.emplace_back(q.front());
+
+	for (int i = k; i < nums.size(); ++i) {
+		if (!q.empty() && nums[i - k] == q.front()) q.pop_front();
+		while (!q.empty() && nums[i] > q.back()) q.pop_back();
+
+		q.emplace_back(nums[i]);
+
+		result.emplace_back(q.front());
+	}
+	return result;
+}
 // multiset排序， nlogn级别
 class Solution {
 public:

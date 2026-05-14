@@ -1,18 +1,16 @@
 ﻿bool isValid(string s) {
-    if (s.size() & 1) return false;
-    static unordered_map<char, char> bracketMap = {
-        {')', '('}, {']', '['},  {'}', '{'}
-    };
+	if (s.size() & 1) return false;
+	static const std::unordered_map<char, char> bracketMap = {
+		{')', '('}, {']', '['},  {'}', '{'}
+	};
 
-    int top = -1;
-    for (char c : s) {
-        auto it = bracketMap.find(c);
+	int top = -1;
+	for (char c : s) {
+		if (auto it = bracketMap.find(c); it == bracketMap.end()) s[++top] = c;
+		else if (top == -1 || s[top--] != it->second) return false;
+	}
 
-        if (it == bracketMap.end()) s[++top] = c;
-        else if (top == -1 || s[top--] != it->second) return false;
-    }
-
-    return top == -1;
+	return top == -1;
 }
 
 bool isValid(string s) {

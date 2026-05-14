@@ -26,10 +26,23 @@ public:
         
         std::vector<std::string> result; result.reserve(4);
         
-        // 枚举所有可能的分割点
+		// 代码缺陷，没有处理len < k的情况，使得isValid必须使用segment.empty()判断，实际上没必要
+		// 但因为没处理 len < k ,相减后是一个极大的无符号正整数，segment.empty()恰好掩盖了这个错误，能够AC
+		// 属于是误打误撞，正确写法见下面注释，当然也可以像以下使用&& i < len;等 for条件处理更好
+		
+		
+        // 枚举所有可能的分割点， for循环的ijk是字符串大小
         for (int i = 1; i <= 3 && i < len; ++i) {
             for (int j = i + 1; j <= i + 3 && j < len; ++j) {
                 for (int k = j + 1; k <= j + 3 && k < len; ++k) {
+					/*
+		for (int i = 1; i <= 3; ++i) {
+            for (int j = i + 1; j <= i + 3; ++j) {
+                for (int k = j + 1; k <= j + 3; ++k) {
+                    int len4 = len - k; 
+                    if (len4 < 1 || len4 > 3) continue; // 最后一段长度必须合法
+					
+					*/
                     // 使用string_view避免拷贝
                     std::string_view part1(s.data(), i);
                     std::string_view part2(s.data() + i, j - i);
@@ -49,10 +62,14 @@ public:
 
 private:
     bool isValid(std::string_view segment) {
-        // 段长度必须在1-3之间
+		/*
+        // 段长度必须在1-3之间，外层调用已处理
         if (segment.empty() || segment.length() > 3) return false;
-        
-        // 不能有前导0，除非段本身就是"0"
+        */
+		
+		
+		// 不能有前导0，除非段本身就是"0"
+		// 此时 segment 长度必为 1~3 ，无需检查 empty()
         if (segment[0] == '0' && segment.length() > 1) return false;
         
         // 必须能转换为0-255之间的数字

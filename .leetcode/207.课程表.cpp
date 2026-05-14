@@ -1,3 +1,142 @@
+bool canFinish(int numCourses, vector<vector<int>>& prerequisites) {
+	constexpr size_t intSize = sizeof(int);
+	// 入度出度，下标是课程编号
+	int *inDegree = reinterpret_cast<int *>(::alloca(numCourses * intSize));
+	int *outDegree =  reinterpret_cast<int *>(::alloca((numCourses + 1) * intSize));
+
+	std::fill(inDegree, inDegree + numCourses, 0);
+	std::fill(outDegree, outDegree + numCourses + 1, 0); // 预留1方便让下标0的值为0，好计算前缀和
+
+	// 统计入度出度
+	#pragma clang loop unroll_count(8) 
+	for (auto const &pre : prerequisites) {
+		++inDegree[pre[0]];
+		++outDegree[pre[1] + 1];
+	}
+	
+	// 前缀和偏移计算，它们的差值是节点的出度
+	#pragma clang loop unroll_count(8) 
+	for (size_t i = 0; i < numCourses; ++i) {
+		outDegree[i + 1] += outDegree[i];
+	}
+
+	// 节点映射，值是u，下标是v，u指向v，表示某节点的后继节点范围
+	int *edges =  reinterpret_cast<int *>(::alloca(prerequisites.size() * intSize));
+	// 拷贝outDegree给currPos，
+	int *currPos =  reinterpret_cast<int *>(::alloca(numCourses * intSize));
+	std::copy(outDegree, outDegree + numCourses, currPos); // 不需要加1，因为最后一个用不到
+	// 前缀和填充，如0，4，6，8，完成填充之后currpos变为4 6 8 ?（联想基数排序填充）
+	#pragma clang loop unroll_count(8)         
+	for (auto const &pre : prerequisites) {
+		edges[currPos[pre[1]]++] = pre[0];
+	}
+
+	size_t begin = 0, end = 0;
+	int *&queue = currPos; // 复用currPos为队列
+	// 拓扑排序，入度为0入队
+	#pragma clang loop unroll_count(8)        
+	for (size_t i = 0; i < numCourses; ++i) {
+		if (inDegree[i] == 0) queue[end++] = i;
+	}
+
+	while (begin < end) {
+		// 出队
+		int u = queue[begin++];
+		// 出度前缀和，差值是节点数，处理u的后继节点范围
+		#pragma clang loop unroll_count(4)
+		for (size_t i = outDegree[u]; i < outDegree[u + 1]; ++i) {
+			// 被u指向的节点v，u被弹出，意味着v的入队-1，
+			// 此时v是新的（u），入队为0，需要入队的节点
+			if (int v = edges[i]; --inDegree[v] == 0) queue[end++] = v;
+		}
+	}
+	return begin == numCourses;//队列为空说明能够完成
+}
+/*
+我们用一个简单典型的例子来说明：  
+- 课程总数 `numCourses = 4`  
+- 先修关系 `prerequisites = [[1,0], [2,0], [3,1], [3,2]]`  
+  表示：课程 0 是课程 1 和 2 的先修课，课程 1 和 2 是课程 3 的先修课。  
+  这是一个有向无环图，可以完成所有课程。
+
+代码执行过程中，各数组存储的内容如下：
+
+---
+
+### 1. `inDegree` – 每个节点的入度
+- **作用**：记录有多少条边指向该节点（即有多少先修课程）。
+- **构建过程**：对每条边 `[to, from]`，`++inDegree[to]`。
+- **本例结果**：  
+  - 边 `[1,0]` ⇒ `inDegree[1] = 1`  
+  - 边 `[2,0]` ⇒ `inDegree[2] = 1`  
+  - 边 `[3,1]` ⇒ `inDegree[3] = 1`  
+  - 边 `[3,2]` ⇒ `inDegree[3] = 2`  
+  最终 `inDegree = [0, 1, 1, 2]`。  
+  含义：课程 3 需要先修两门课（1 和 2），课程 1、2 各需要一门先修课（0），课程 0 不需要先修课。
+
+---
+
+### 2. `outDegree` – 出度的前缀偏移表
+- **作用**：将每个节点的出边连续存储在 `edges` 数组中，通过 `outDegree[u]` 和 `outDegree[u+1]` 定位区间。
+- **构建过程**：  
+  1. 统计每个节点的出度（但实际代码统计的是 `outDegree[from+1]++`，为前缀和做准备）。  
+     对边 `[to, from]`：`++outDegree[from + 1]`。  
+  2. 然后做前缀和：`outDegree[i+1] += outDegree[i]`。
+- **本例中间过程**（统计后，未做前缀和时）：  
+  `outDegree = [0, 2, 1, 1, 0]`（索引 0~4）。  
+  前缀和后：  
+  `outDegree[0] = 0`  
+  `outDegree[1] = outDegree[1] + outDegree[0] = 2 + 0 = 2`  
+  `outDegree[2] = outDegree[2] + outDegree[1] = 1 + 2 = 3`  
+  `outDegree[3] = outDegree[3] + outDegree[2] = 1 + 3 = 4`  
+  `outDegree[4] = outDegree[4] + outDegree[3] = 0 + 4 = 4`  
+- **最终**：`outDegree = [0, 2, 3, 4, 4]`。  
+  含义：  
+  - 节点 0 的出边在 `edges` 中的下标范围是 `[0, 2)`（即 `edges[0]`, `edges[1]`）  
+  - 节点 1 的出边范围是 `[2, 3)`（即 `edges[2]`）  
+  - 节点 2 的出边范围是 `[3, 4)`（即 `edges[3]`）  
+  - 节点 3 的出边范围是 `[4, 4)`（即空）
+
+---
+
+### 3. `edges` – 所有边的终点，按起点分组连续存放
+- **作用**：紧凑存储邻接表，`edges[ outDegree[u] .. outDegree[u+1]-1 ]` 是节点 `u` 指向的所有后继节点。
+- **构建过程**：先复制 `outDegree` 的前 `numCourses` 个元素到 `currPos` 作为当前写入位置。  
+  然后对每条边 `[to, from]`：`edges[ currPos[from]++ ] = to`。
+- **本例执行**：  
+  初始 `currPos = outDegree[0..3] = [0, 2, 3, 4]`。  
+  - 边 `[1,0]` ⇒ `edges[0] = 1`，`currPos[0]` 变为 1  
+  - 边 `[2,0]` ⇒ `edges[1] = 2`，`currPos[0]` 变为 2  
+  - 边 `[3,1]` ⇒ `edges[2] = 3`，`currPos[1]` 变为 3  
+  - 边 `[3,2]` ⇒ `edges[3] = 3`，`currPos[2]` 变为 4  
+  最终 `edges = [1, 2, 3, 3]`。  
+  含义：结合前面 `outDegree` 的区间：  
+  - 节点 0 的后继是 `1, 2`  
+  - 节点 1 的后继是 `3`  
+  - 节点 2 的后继是 `3`  
+  - 节点 3 无后继
+
+---
+
+### 4. `currPos` – 临时指针，后被复用为队列
+- **第一阶段**：在构建 `edges` 时，`currPos` 保存每个节点当前已经填入 `edges` 的末尾位置。  
+  初始为 `outDegree[0..3] = [0, 2, 3, 4]`。  
+  处理完所有边后，`currPos` 变为 `[2, 3, 4, 4]`（不再使用）。
+- **第二阶段**：`queue` 指针直接复用 `currPos` 的内存空间，作为拓扑排序的队列。  
+  开始时 `begin = 0, end = 0`，将入度为 0 的节点入队：  
+  节点 0 入度=0 ⇒ `queue[0] = 0`，`end = 1`。  
+  随后不断出队处理，直到队列空。
+
+---
+
+通过这个例子可以清楚地看到：  
+- `inDegree` 记录依赖数量，用于判断能否入队；  
+- `outDegree` 和 `edges` 共同构成紧凑的邻接表，高效遍历后继；  
+- `currPos` 先做构建辅助，后做队列，节省内存。  
+整个算法相当于用 **前缀和 + 基数排序** 的思想实现了拓扑排序，时间复杂度 O(V+E)。
+*/
+
+
 // 稀疏最优，三目运算优化
 // 稠密情况下慢于递归，1.1~1.4倍
 // 稀疏情况下快于递归，5倍以上

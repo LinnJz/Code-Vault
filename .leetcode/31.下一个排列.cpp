@@ -4,20 +4,20 @@ void nextPermutation(vector<int>& nums) {
     auto first = nums.begin(), last = nums.end();
     auto back = last;
 
-    if (first == back || first == --back) return;
+    if (first == back || first == --back) return; // 空或只有一个元素
 
     while (true) {
-        auto back_next = back;
-        if (*--back < *back_next) {
+        auto back_next = back; // 复制品
+        if (*--back < *back_next) { // 前一个元素比当前元素小
             auto target = last;
-            do { --target; } while ( !(*back < *target) );
+            do { --target; } while ( !(*back < *target) ); // 循环找一个元素 ，这个元素要比当前元素大
 
-            std::iter_swap(back, target);
-            std::reverse(back_next, last);
+            std::iter_swap(back, target); // 交换当前元素和第一个比他大的元素位置
+            std::reverse(back_next, last); // 翻转 
             break;
         }
 
-        if (back == first) [[unlikely]] {
+        if (back == first) [[unlikely]] { // 是一个有序的序列（类似 321），直接翻转
             std::reverse(first, last);
             break;
         }

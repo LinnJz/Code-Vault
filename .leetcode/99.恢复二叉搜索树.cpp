@@ -1,54 +1,43 @@
 // 类似题：98. 验证二叉搜索树
-
+// 中序遍历，根左右
 void recoverTree(TreeNode* root) {
-    TreeNode *prev = nullptr, *first = nullptr, *second = nullptr;
-    TreeNode *curr = root;
-    
-    while (curr) {
-        TreeNode *predecessor = curr->left;
-        if (predecessor) {
-            // 找到当前节点的前驱节点
-            while (predecessor->right && predecessor->right != curr) {
-                predecessor = predecessor->right;
-            }
-            
-            if (!predecessor->right) {
-                // 建立临时链接，然后向左移动
-                predecessor->right = curr;
-                curr = curr->left;
-            } 
-            else {
-                // 断开临时链接，处理当前节点
-                predecessor->right = nullptr;
-                
-                // 检查逆序对
-                if (prev && prev->val > curr->val) {
-                    if (!first) first = prev;
-                    second = curr;
-                }
-                prev = curr;
-                
-                curr = curr->right;
-            }
-        } 
-        else {
-            // 没有左子树，直接处理当前节点
-            if (prev && prev->val > curr->val) {
-                if (!first) first = prev;
-                second = curr;
-            }
-            prev = curr;
-            
-            curr = curr->right;
-        }
-    }
-    
-    // 交换两个错误节点的值
-    if (first && second) {
-        std::swap(first->val, second->val);
-    }
-}
+	TreeNode *curr = root, *prev = nullptr, *first = nullptr, *second = nullptr;
+	while (curr) {
+		if (TreeNode *predecessor = curr->left; predecessor) {
+			while (predecessor->right && predecessor->right != curr) {
+				predecessor = predecessor->right;
+			}
 
+			if (predecessor->right) { // 自底向上
+                // 断开临时链接，处理当前节点
+				predecessor->right = nullptr;
+				if (prev && prev->val > curr->val) { // 不需要 >=
+					if (!first) first = prev;
+					second = curr;
+				}
+				prev = curr;
+				curr = curr->right;
+			}
+			else { // 从上往下
+                // 建立临时链接，然后向左移动
+				predecessor->right = curr;
+				curr = curr->left;
+			}
+		}
+		else { // 中序遍历的第一个节点，从此时开始向上
+            // 没有左子树，直接处理当前节点
+			// 检查逆序对
+			if (prev && prev->val > curr->val) {
+				if (!first) first = prev; // 根
+				second = curr; // 左
+			}
+			prev = curr;
+			curr = curr->right;
+		}
+	}
+    // 交换两个错误节点的值
+	if (first) std::swap(first->val, second->val);
+}
 /*
  * @lc app=leetcode.cn id=99 lang=cpp
  *

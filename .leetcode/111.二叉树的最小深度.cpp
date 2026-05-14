@@ -55,58 +55,42 @@ public:
 class Solution {
 public:
     int minDepth(TreeNode* root) {
-        // 处理空树的情况
-        if (root == nullptr) return 0;
-        
-        int minDepth = INT_MAX;  // 记录最小深度
-        int currentDepth = 0;    // 当前节点的深度
-        int rightPathLength = 0; // 右路径长度
-        TreeNode* curr = root;
-        TreeNode* predecessor = nullptr;
-        
-        while (curr != nullptr) {
-            if (curr->left == nullptr) {
-                // 没有左子树，直接转向右子树
-                ++currentDepth;
-                // 检查当前节点是否为叶子节点
-                if (curr->left == nullptr && curr->right == nullptr && minDepth > currentDepth) {
-                    minDepth = currentDepth;
+		if (!root) return 0;
+
+        int currDepth = 0, minDepth = INT_MAX;
+        TreeNode *curr = root;
+        while (curr) {
+            if (TreeNode *predecessor = curr->left; predecessor) {
+                int rightPathDepth = 1;
+                while (predecessor->right && predecessor->right != curr)
+                    predecessor = predecessor->right, ++rightPathDepth;
+                
+                if (predecessor->right) {
+					// 第二次访问，断开临时链接
+                    predecessor->right = nullptr;
+					// 检查前驱节点是否为叶子节点
+                    if (!predecessor->left && minDepth > currDepth) {
+                        minDepth = currDepth;
+                    }
+					// 调整深度并转向右子树
+                    currDepth -= rightPathDepth;
+                    curr = curr->right;
+                }
+                else {
+					// 第一次访问，建立临时链接
+                    predecessor->right = curr;
+                    ++currDepth;
+                    curr = curr->left;
+                }
+            }
+            else {
+				// 检查当前节点是否为叶子节点，隐含curr->left是空，注意minDepth > ++currDepth在前，!curr->right在后，否则短路径优化导致currDepth不能自增
+                if (minDepth > ++currDepth && !curr->right) {
+                    minDepth = currDepth;
                 }
                 curr = curr->right;
             }
-            else {
-                // 找到当前节点在中序遍历下的前驱节点
-                rightPathLength = 1;
-                predecessor = curr->left;
-                
-                // 寻找左子树的最右节点
-                while (predecessor->right != nullptr && predecessor->right != curr) {
-                    predecessor = predecessor->right;
-                    ++rightPathLength;
-                }
-                
-                if (predecessor->right == nullptr) {
-                    // 第一次访问，建立临时链接
-                    predecessor->right = curr;
-                    ++currentDepth;
-                    curr = curr->left;
-                }
-                else {
-                    // 第二次访问，断开临时链接
-                    predecessor->right = nullptr;
-                    
-                    // 检查前驱节点是否为叶子节点
-                    if (predecessor->left == nullptr && minDepth > currentDepth) {
-                        minDepth = currentDepth;
-                    }
-                    
-                    // 调整深度并转向右子树
-                    currentDepth -= rightPathLength;
-                    curr = curr->right;
-                }
-            }
         }
-        
         return minDepth;
     }
 };

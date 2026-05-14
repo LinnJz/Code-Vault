@@ -45,7 +45,7 @@ public:
         int right_depth = depth(node->right, max_diameter);
         
         // 当前节点的直径 = 左深度 + 右深度
-        max_diameter = max(max_diameter, left_depth + right_depth);
+        max_diameter = max(max_diameter, left_depth + right_depth); // 要的是边数而不是节点数，不加1
         
         // 返回当前子树深度（左右最大深度 + 1）
         return max(left_depth, right_depth) + 1;

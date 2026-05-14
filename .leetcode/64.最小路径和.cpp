@@ -1,15 +1,20 @@
-    int minPathSum(vector<vector<int>>& grid) {
-        size_t ROWS{ grid.size() }, COLS{ grid[0].size() };
-        std::vector<uint32_t> dp(COLS + 1, INT_MAX);
-        dp[0] = dp[1] = 0;
-        for(size_t i = 1; i <= ROWS; ++i) {
-            dp[0] += dp[1]; // 处理第一列，让min能够正确处理dp【1】加上top的值
-            for(size_t j = 1; j <= COLS; ++j) {
-                dp[j] = std::min(dp[j], dp[j - 1]) + grid[i - 1][j - 1];
-            }
-        }
-        return dp.back();
-    }
+int minPathSum(vector<vector<int>>& grid) {
+	size_t const ROWS = grid.size(), COLS = grid[0].size();
+	
+	int *dp = reinterpret_cast<int *>(::alloca((COLS + 1) * sizeof(int)));
+	dp[0] = dp[1] = 0;
+	std::fill(dp + 2, dp + COLS + 1, INT_MAX);
+	
+	for (size_t row = 1; row <= ROWS; ++row) {
+		dp[0] = dp[1]; // std::min取最小，因为第0列都是0，所以相等避免不是真实值
+		#pragma clang loop unroll_count(4)
+		for (int col = 1; col <= COLS; ++col) {
+			dp[col] = std::min(dp[col], dp[col - 1]) + grid[row - 1][col - 1];
+		}
+	}
+
+	return dp[COLS];
+}
 /*
  * @lc app=leetcode.cn id=64 lang=cpp
  *

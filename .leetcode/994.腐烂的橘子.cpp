@@ -31,7 +31,8 @@ public:
 
         // 方向数组，用于四个方向的扩展
         static std::array<Point, 4> dirs{Point{-1, 0}, Point{1, 0}, Point{0, -1}, Point{0, 1}};
-        int time = -1; // 初始化时间
+		// 初始化时间, -1是因为最后一趟如果都是腐烂橘子仍旧++，如果是0还需要额外处理，-1开始避免这样的额外处理
+        int time = -1; 
 
         while (!q.empty()) {
             int size = q.size(); // 不能简化，因为emplace会让size改变，从而for错误

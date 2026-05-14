@@ -1,4 +1,13 @@
+int strStr(string const &haystack, string const &needle) {
+	if (haystack.size() < needle.size()) return -1;
 
+	for (int i = 0; i <= haystack.size() - needle.size(); ++i) {
+		if (std::string_view { haystack.data() + i, needle.size() } == needle) {
+			return i;
+		}
+	}
+	return -1;
+}
 #include<string>
 /*
  * @lc app=leetcode.cn id=28 lang=cpp

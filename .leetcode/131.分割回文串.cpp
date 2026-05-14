@@ -15,6 +15,7 @@
 */
 class Solution {
 public:
+	// 决策树，回溯枚举所有分割点
     std::vector<std::vector<std::string>> partition(std::string s) {
         std::vector<std::vector<std::string>> result;   result.reserve(4);
         std::vector<std::string> currSet;   currSet.reserve(s.length());
@@ -24,13 +25,14 @@ public:
     }
 
     void backtrack(const auto& s, auto& result, auto& currSet, auto start) {
+		// 分割点结束
         if (start == s.end()) {
             result.push_back(currSet);
             return;
         }
         
         for(auto it = start; it != s.end(); ++it) {
-            if(isPalindrome(start, it)) {
+            if(isPalindrome(start, std::next(it))) {
                 currSet.emplace_back(start, std::next(it));
                 backtrack(s, result, currSet, std::next(it));
                 currSet.pop_back();
@@ -41,7 +43,7 @@ public:
     template<typename RanIter>
     bool isPalindrome(RanIter begin, RanIter end) {
         #pragma GCC unroll 4
-        for( ; begin < end; ++begin, --end) {
+        for(--end ; begin < end; ++begin, --end) {
             if(*begin != *end) return false;
         }
         return true;

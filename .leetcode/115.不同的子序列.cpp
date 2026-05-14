@@ -1,3 +1,18 @@
+int numDistinct(string const &s, string const &t) {
+	ptrdiff_t const sLen = s.size(), tLen = t.size();
+	if (sLen < tLen) [[unlikely]] return 0;
+
+	auto *dp = reinterpret_cast<uint32_t *>(::alloca((tLen + 1) * sizeof(uint32_t)));
+	dp[0] = 1, std::fill(dp + 1, dp + tLen + 1, 0);
+
+	for (ptrdiff_t i = 1; i <= sLen; ++i) {
+		// 最多能够匹配t大小的字符，因为我们要找的是s中t的个数
+		for (ptrdiff_t j = std::min(i, tLen); j >= std::max<ptrdiff_t>(tLen - sLen + i , 1); --j) {
+			if (s[i - 1] == t[j - 1]) dp[j] += dp[j - 1];
+		}
+	}
+	return dp[tLen];
+}
 /*
  * @lc app=leetcode.cn id=115 lang=cpp
  *
@@ -7,12 +22,15 @@
 // @lc code=start
 class Solution {
 public:
+	// dp[i][j] 含义 以 i-1 为结尾的s中 有 以 j-1 为结尾的t的个数为
+	// 操作只有删除s字符不删除t，因为求s中t的个数
+	// s: bagg ，t: bag
     int numDistinct(string s, string t) {
         int sLen = s.size(), tLen = t.size();
         if (sLen < tLen) return 0;
         
         // 使用一维数组，大小为 tLen + 1
-        std::vector<std::size_t> dp(tLen + 1, 0);
+        std::vector<std::size_t> dp(tLen + 1, 0); // + 1 
         dp[0] = 1;  // 空字符串是任何字符串的子序列
         /*
     1. std::min(i, tLen)
@@ -59,14 +77,15 @@ public:
         因此，可以提前跳过这些不可能的情况
         */
         for (int i = 1; i <= sLen; ++i) {
+			// 只要是从左上和上方且使用滚动数组的，一定
             // 从后往前遍历，避免覆盖需要的数据
             #pragma clang loop unroll_count(8)
             // 内层循环从min(i, tLen)到1，减少不必要的计算，max确保剩余字符足够完成匹配
             for (int j = std::min(i, tLen); j >= std::max(tLen - sLen + i, 1); --j) {
                 if (s[i - 1] == t[j - 1]) {
-                    dp[j] = dp[j] + dp[j - 1];
+                    dp[j] = dp[j] + dp[j - 1]; // 取决于左上方和上方
                 }
-                // 不相等时，dp[j] 保持不变（相当于二维数组中的 dp[i-1][j]）
+                // 不相等时，取决于上方，dp[j] 保持不变（相当于二维数组中的 dp[i-1][j]）
             }
         }
         return dp.back();

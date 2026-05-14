@@ -1,24 +1,19 @@
-class Solution {
-public:
-    int coinChange(vector<int>& coins, int amount) {
-        if (amount == 0) return 0;
-        
-        // 取最小，我们就设置最大
-        std::vector<std::size_t> dp(amount + 1, amount + 1);
-        // amount == 0 就是0
-        dp[0] = 0;
-        #pragma clang loop interleave(enable) unroll_count(8)
-        for (int coin : coins) {
-            #pragma clang loop interleave(enable) unroll_count(8)
-            for (int j = coin; j <= amount; ++j) {
-                // + 1 加上本身，及值，coin的值则是weight，取最小
-                if(auto value = dp[j - coin] + 1; value < dp[j]) dp[j] = value;
-            }
-        }
-        
-        return dp[amount] > amount ? -1 : dp[amount];
-    }
-};
+int coinChange(vector<int>& coins, int amount) {
+	if (amount == 0) [[unlikely]] return 0;
+	
+	int* dp = reinterpret_cast<int *>(::alloca((amount + 1) * sizeof(int)));
+	// amount == 0 就是0， 取最小，我们就设置最大
+	dp[0] = 0, std::fill(dp + 1, dp + amount + 1, amount + 1);
+
+	for (int num : coins) {
+		#pragma clang loop unroll_count(4)
+		for (int j = num; j <= amount; ++j) {
+			// + 1 加上本身，及值，coin的值则是weight，取最小
+			if(auto val = dp[j - num] + 1; val < dp[j]) dp[j] = val;
+		}
+	}
+	return dp[amount] > amount ? -1 : dp[amount];
+}
 
 /*
  * @lc app=leetcode.cn id=322 lang=cpp

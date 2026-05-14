@@ -16,6 +16,25 @@ public:
         return isNegative ? -result : result;
     }
     int reverse(int x) {
+        bool is_neg = x < 0;
+        x = ((uint32_t)x + (x >> 31)) ^ (x >> 31);
+
+        int result = 0, loop_count = 0;
+        while (x > 0)
+        {
+            if (++loop_count == 10) 
+            {
+                if (result > INT_MAX / 10) return 0;
+                return 9 - x + is_neg <= 2 ? 0 : ( result * 10 + x & ~(-is_neg) ) | ( (~(result * 10 + x) + 1) & -is_neg );
+            }
+            auto [quto, rem] = ::ldiv(x, 10);
+            result = result * 10 + rem;
+            x = quto;
+        }
+
+        return ( result & ~(-is_neg) ) | ( (~result + 1) & -is_neg );
+    }
+    int reverse(int x) {
         bool is_negative { x < 0 };
         if (is_negative) {
             if (x == INT_MIN) return 0;

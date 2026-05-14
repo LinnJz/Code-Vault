@@ -42,7 +42,8 @@ public:
 
 #elif defined(ONE_DIM_DP)
         // 一维动态规划解法（空间优化）
-        vector<int> dp(n, 1);  // 初始化为1，因为第一行都是1
+        int *dp = reinterpret_cast<int *>(::alloca(n * sizeof(int)));
+        std::fill(dp, dp + n, 1);  // 初始化为1，因为第一行都是1
         
         // 动态规划过程
         for (int i = 1; i < m; i++) {
@@ -52,12 +53,12 @@ public:
             }
         }
         
-        return dp.back();
+        return dp[n - 1];
 
 #elif defined(MATH_SOLUTION)
         // 数学解法（组合数学）
         // 从起点到终点需要移动 m-1+n-1 次，其中向下移动 m-1 次，向右移动 n-1 次
-        // 所以不同路径数等于从 m+n-2 次移动中选择 m-1 次向下移动的方式数，即 C(m+n-2, m-1) 等价于 C(n-1, m-1)（组合数的对称性 C(N, k) = C(N, N-k)）
+        // 所以不同路径数等于从 m+n-2 次移动中选择 m-1 次向下移动的方式数，即 C(m+n-2, m-1) 等价于 C(m+n-2, m-1)（组合数的对称性 C(N, k) = C(N, N-k)）
         
         // 为避免溢出，选择较小的值作为组合数计算的基础
         if (m < n) std::swap(m, n);

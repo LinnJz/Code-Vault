@@ -26,25 +26,33 @@ DP数组的长度应该是 s.length() + 1 ，因为我们需要考虑空字符�
 class Solution {
 public:
     bool wordBreak(std::string s, std::vector<std::string> wordDict) {
-        std::size_t maxLength{ 0 };
-        std::unordered_set<std::string_view> wordSet;
-        // 计算wordDict中最长单词的长度
-        for (const std::string& word : wordDict) {
-            if (maxLength < word.size()) maxLength = word.size();
-            wordSet.emplace(word.data(), word.size());
+        std::unordered_set<std::string_view> wordSet; wordSet.reserve(wordDict.size());
+        ptrdiff_t maxWordSize = 0, size = s.size();
+        for (auto const &str : wordDict) {
+            wordSet.emplace(str.data(), str.size());
+			// 计算wordDict中最长单词的长度
+
+            if (str.size() > maxWordSize) maxWordSize = str.size();
         }
+		/*
+		——————
+		  i  j
+		如果 i j 在字符串内，且dp[i] 是true，说明 从0到j是true
+		*/
+		
         // 创建dp数组，dp[i]表示s的前i个字符是否可以被拆分
-        std::vector<std::uint8_t> dp(s.size() + 1, false);
-        dp.front() = true;
-        for (int j = 1; j <= s.size(); ++j) {
+        bool *dp = reinterpret_cast<bool *>(::alloca(size + 1));
+        dp[0] = true, std::fill(dp + 1, dp + size + 1, false); // dp[0]必须因为不是true没法更新
+		// 背包
+		for (ptrdiff_t j = 1; j <= size; ++j) {
             // 只检查不超过maxLength长度的子串
             // 如果 j - i > maxLength，则 s[i..j-1] 一定不是词典中的单词，检查它毫无意义
             // 并且可以通过dp[i] 快速检查先前区间是否是true
-            for (int i = std::max(0, j - (int)maxLength); i < j; ++i) {
+			// 物品
+            for (ptrdiff_t i = std::max(0z, j - maxWordSize); i < j; ++i) {
                 // 如果s的前j个字符可以被拆分，且s[j...i-1]在wordDict中
                 if (dp[i] && wordSet.contains(std::string_view(s.data() + i, j - i))) {
                     dp[j] = true;
-                    break;
                 }
             }
         }

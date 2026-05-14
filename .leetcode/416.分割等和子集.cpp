@@ -1,3 +1,26 @@
+bool canPartition(vector<int>& nums) {
+	int totalSum = 0, maxNum = 0;
+	for (int num : nums) {
+		totalSum += num;
+		if (maxNum < num) maxNum = num;
+	}
+	if (totalSum & 1) return false;
+
+	int halfSum = totalSum >> 1;
+	if (maxNum > halfSum) return false;
+
+	int *dp = reinterpret_cast<int *>(::alloca((halfSum + 1) * sizeof(int)));
+	std::fill(dp, dp + halfSum + 1, 0);
+
+	for (int num : nums) {
+		#pragma clang loop unroll_count(4)
+		for (int j = halfSum; j >= num; --j) {
+			if (auto val = dp[j - num] + num; val > dp[j])
+				dp[j] = val;
+		}
+	}
+	return dp[halfSum] == halfSum;
+}
 /*
  * @lc app=leetcode.cn id=416 lang=cpp
  *

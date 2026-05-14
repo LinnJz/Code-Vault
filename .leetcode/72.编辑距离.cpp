@@ -1,3 +1,24 @@
+int minDistance(string const &word1, string const &word2) {
+	if (word1.size() > word2.size()) return minDistance(word2, word1);
+	size_t const w1Len = word1.size(), w2Len = word2.size();
+
+	int *dp = reinterpret_cast<int *>(::alloca((w2Len + 1) * sizeof(int)));
+	std::iota(dp, dp + w2Len + 1, 0);
+
+	for (size_t i = 1; i <= w1Len; ++i) {
+		int topLeft = dp[0];
+		dp[0] = i;
+		#pragma clang loop unroll_count(4)
+		for (size_t j = 1; j <= w2Len; ++j) {
+			int top = dp[j];
+			dp[j] = word1[i - 1] != word2[j - 1]
+					? std::min({dp[j - 1], top, topLeft}) + 1
+					: topLeft;
+			topLeft = top;
+		}
+	}
+	return dp[w2Len];
+}
 /*
  * @lc app=leetcode.cn id=72 lang=cpp
  *

@@ -1,28 +1,39 @@
-﻿    string minWindow(string s, string t) {
-        int sLen = s.size(), tLen = t.size();
-        if (tLen > sLen) return {};
+﻿string minWindow(string const &s, string const &t) {
+	size_t const sLen = s.size(), tLen = t.size();
+	if (tLen > sLen) [[unlikely]] return {};
 
-        std::array<int, 128> mainWind{}, patternWind{};
-        int miniSubstrPos{ 0 }, miniSubstrLen{ INT_MAX }, patternValid{ 0 }, mainValid{ 0 };
+	std::array<int, 128> window{};
+	// #pragma clang loop unroll_count(8)
+	// for (char c : t) ++window[c];
 
-        for (char c : t) if (++patternWind[c] == 1) ++patternValid;
-        
-        for (int left = 0, right = 0; right < sLen; ++right) {
-            char add = s[right];
-            if (patternWind[add] > 0 && ++mainWind[add] == patternWind[add]) ++mainValid;
+	int minSubstrPos = 0, minSubstrLen = INT_MAX, mainVaild = 0, patternVaild = 0;
+	
+	// 去除得到真实unique字符个数
+	// #pragma clang loop unroll_count(8)
+	// for (size_t i = 0; i < 128; ++i) patternVaild += (window[i] > 0);
+	
+	#pragma clang loop unroll_count(8)
+	for (char c : t) patternVaild += (++window[c] == 1);
+	
+	// 滑动窗口
+	#pragma clang loop unroll_count(4)
+	for (size_t left = 0, right = 0; right < sLen; ++right) {
+		// char add = s[right];
+		mainVaild += (--window[s[right]] == 0); // 如果s的字符在 t存在，--t的字符表示匹配，如果等于0说明满足一个unique字符
+		
+		// 考虑AABC找 ABC情况，mainValid和patternValid都是去重的字符个数，AABC是3匹配，从左到右，left移出了最左A，得到ABC仍旧匹配进行计算
+		while (mainVaild == patternVaild) {
+			if (int currLen = right - left + 1; currLen < minSubstrLen) {
+				minSubstrLen = currLen, minSubstrPos = left;
+			}
 
-            // 考虑AABC找 ABC情况，mainValid和patternValid都是去重的字符个数，AABC是3匹配，从左到右，left移出了最左A，得到ABC仍旧匹配进行计算
-            while (patternValid == mainValid) {
-                if (int currLen = right - left + 1; currLen < miniSubstrLen) { 
-                    miniSubstrLen = currLen;
-                    miniSubstrPos = left;
-                }
-                char del = s[left++];
-                if (patternWind[del] > 0 && mainWind[del]-- == patternWind[del]) --mainValid;
-            }
-        }
-        return miniSubstrLen == INT_MAX ? std::string{} : s.substr(miniSubstrPos, miniSubstrLen);
-    }
+			// char del = s[left++];
+			mainVaild -= (++window[s[left++]] > 0); // 收缩，删掉s的left，意味着该字符需要重新加回来，如果>0不满足unique字符个数（==0），说明有差异-1不能继续循环了
+		}
+	}
+	return minSubstrLen != INT_MAX ? s.substr(minSubstrPos, minSubstrLen) : std::string{};
+}
+
 class Solution {
 public:
     string minWindow(string s, string t) {
@@ -75,34 +86,6 @@ public:
         }
 
         return minLen == INT_MAX ? std::string{} : s.substr(start, minLen);
-    }
-};
-
-class Solution {
-public:
-    string minWindow(string s, string t) {
-        size_t sLen{ s.size() }, tLen{ t.size() };
-        if(sLen < tLen) return {};
-
-        std::array<int, 128> count{};
-        int miniSubstrPos{ 0 }, miniSubstrLen{ INT_MAX }, patternValid{ 0 }, mainValid{ 0 };
-        #pragma clang loop unroll_count(8)
-        for(char c : t) if (++count[c] == 1) ++patternValid;
-
-        #pragma clang loop unroll_count(4)
-        for(size_t left = 0, right = 0; right < sLen; ++right) {
-            if (--count[s[right]] == 0) ++mainValid;
-
-            while (mainValid == patternValid) {
-                if (int currLen = right - left + 1; currLen < miniSubstrLen) { 
-                    miniSubstrLen = currLen;
-                    miniSubstrPos = left;
-                }
-                if (++count[s[left++]] > 0) --mainValid;
-            }
-        }
-
-        return miniSubstrLen == INT_MAX ? std::string{} : s.substr(miniSubstrPos, miniSubstrLen);
     }
 };
 

@@ -11,12 +11,58 @@ int longestConsecutive(vector<int>& nums) {
                 ++length;
             }
             if(max_length < length) max_length = length;
+			// 剪枝条件的本质是鸽巢原理与连续整数区间的不相交性的组合。
+			// 每个连续序列对应一段连续的整数区间（例如 [a, a+L-1]），且不同序列的区间在数轴上互不重叠（否则会合并成一个更大的连续序列）。
+
+			// 代码只从每个区间的最小值（即 num-1 不存在的元素）开始探测，因此每次循环处理的是一个完整的、互不重叠的连续区间。
+
+			// 设当前找到的连续区间长度为 L，原始数组长度为 n（含重复值）。由于每个不同的整数至少出现一次，所以所有互不重叠的连续区间的长度之和 ≤ 不同整数的个数 ≤ n。
+
+			// 如果 2L ≥ n，则其余所有区间长度之和 ≤ n - L ≤ L，因此任何其他区间长度不可能超过 L。此时 L 已经是全局最长连续序列长度，可以提前终止循环。
             if(max_length * 2 >= nums.size()) break;
         }
     }
 
     return max_length;
 }
+int longestConsecutive(vector<int>& nums) {
+	if (nums.empty()) [[unlikely]] return 0;
+
+	radix_sort(nums.data(), nums.size());
+
+	int dummy = nums.front() - 1, currLen = 0, maxLen = 0;
+	#pragma clang loop unroll_count(2)
+	for (int num : nums) {
+		if (dummy == num) continue; // 重复
+		else if (dummy + 1 != num) currLen = 1; // 断裂
+		else if (++currLen > maxLen) maxLen = currLen; // 连续
+		dummy = num;
+	}
+	return maxLen;
+}
+// 排序剪枝优化
+int longestConsecutive(vector<int>& nums) {
+        if (nums.empty()) [[unlikely]] return 0;
+
+        radix_sort(nums.data(), nums.size());
+
+        int dummy = nums.front() - 1, currLen = 0, maxLen = 0;
+        #pragma clang loop unroll_count(4)
+        for (int num : nums) {
+            if (dummy == num) continue;
+            else if (dummy + 1 != num) {
+				// 断裂的时候应用剪枝
+                if (currLen > maxLen && (maxLen = currLen) * 2 >= nums.size()) break;
+                currLen = 1;
+            } 
+            else ++currLen;
+
+            dummy = num;
+        }
+		// 处理最后一段连续到尾
+        if (currLen > maxLen) maxLen = currLen;
+        return maxLen;
+    }
 /*
  * @lc app=leetcode.cn id=128 lang=cpp
  *

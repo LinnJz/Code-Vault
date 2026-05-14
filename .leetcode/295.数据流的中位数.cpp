@@ -1,4 +1,53 @@
-﻿/*
+﻿class MedianFinder {
+public:
+    MedianFinder() {
+        minPart.reserve(1024);
+        maxPart.reserve(1024);
+    }
+    
+    void addNum(int num) {
+        if (minPart.empty() || num <= minPart[0]) {
+            minPart.push_back(num);
+			// 保持堆
+            std::push_heap(minPart.begin(), minPart.end(), std::less<>{}); // 和sort对比，less在sort是递增，堆排递增是大根堆，最小部分
+        }
+        else {
+            maxPart.push_back(num);
+            std::push_heap(maxPart.begin(), maxPart.end(), std::greater<>{});
+        }
+
+        if (minPart.size() > maxPart.size() + 1) {
+			// 下沉拿出堆顶元素
+            std::pop_heap(minPart.begin(), minPart.end(), std::less<>{});
+
+            maxPart.push_back(minPart.back());
+            std::push_heap(maxPart.begin(), maxPart.end(), std::greater<>{});
+
+			// 别忘记弹出
+            minPart.pop_back();
+        }
+        else if (maxPart.size() > minPart.size()){
+            std::pop_heap(maxPart.begin(), maxPart.end(), std::greater<>{});
+
+            minPart.push_back(maxPart.back());
+            std::push_heap(minPart.begin(), minPart.end(), std::less<>{});
+
+            maxPart.pop_back();
+        }
+    }
+    
+    double findMedian() {
+        if (minPart.size() == maxPart.size() + 1) {
+            return minPart[0];
+        }
+        return (minPart[0] + maxPart[0]) / 2.0;
+    }
+private:
+    std::vector<int> minPart; // 大根堆，得到递增序列，是最小部分
+    std::vector<int> maxPart; // 小根堆，得到递减序列，是最大部分
+};
+
+/*
  * @lc app=leetcode.cn id=295 lang=cpp
  *
  * [295] 数据流的中位数

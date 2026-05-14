@@ -13,7 +13,20 @@ using namespace std;
 // 定义使用的解法
 #define BACKTRACKING
 //#define DYNAMIC_PROGRAMMING
-
+namespace {
+    constexpr uint32_t catalan(int n) noexcept {
+        uint32_t c = 1;
+        for (int k = 0; k < n; ++k) {
+            c = c * 2 * (2 * k + 1) / (k + 2);
+        }
+        return c;
+    }
+    template<size_t... I>
+    constexpr auto make_catalan_arr(std::index_sequence<I...>) noexcept {
+        return std::array{ catalan(I)... };
+    }
+    constexpr auto catalan_cache = make_catalan_arr(std::make_index_sequence<9>{});
+}
 class Solution {
 public:
     std::size_t catalan_lgamma(std::size_t n) {

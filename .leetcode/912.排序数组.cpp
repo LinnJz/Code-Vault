@@ -60,15 +60,15 @@ private:
         auto i = std::prev(left), j = pivot_pos;
         while (true) {
             do { ++i; } while (comp(*i, pivot_val)); // 找比枢轴大
-            do { --j; } while (j > left && comp(j >= left && pivot_val, *j)); // 找比枢轴小
+            do { --j; } while (j > left && comp(pivot_val, *j)); // 找比枢轴小
             if (i >= j) break;
             std::iter_swap(i, j);
         }
 
         // 将枢轴放到正确位置
         std::iter_swap(i, pivot_pos); // 此时i的值是枢轴值
-
-        // 尾递归优化：先处理较小的子数组，减少递归深度，防止栈溢出
+        // 通过先递归较小的子数组保证了最坏情况下的深度仍然为 O(log n)，防止栈溢出。
+		// 这是一种尾递归优化思想的应用，但不是严格的尾递归
         if (std::distance(left, i) < std::distance(i, right)) {
             hoare_quick_sort(left, i, comp);
             hoare_quick_sort(std::next(i), end, comp); // 注意end是开区间

@@ -41,13 +41,12 @@ public:
         ListNode* next = head->next;
 
         while(next) {
-            ListNode* temp = next->next;
             ptr->next = next;
+            prev->next = next->next;
             next->next = prev;
-            prev->next = temp;
 
             ptr = prev;
-            prev = temp;
+            prev = prev->next;
             if(!prev) break;
             next = prev->next;
         }

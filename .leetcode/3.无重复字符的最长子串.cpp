@@ -1,34 +1,32 @@
-﻿class Solution {
-public:
-    template <typename T, std::size_t N, std::size_t... Is>
-    constexpr auto make_array_impl(T&& value, std::index_sequence<Is...>) {
-        using ValueType = std::decay_t<T>;
-        ValueType val = std::forward<T>(value);
-        return std::array<ValueType, N>{ (static_cast<void>(Is), val)... };
-    }
+﻿template<class T, size_t N>
+constexpr decltype(auto) make_array(T&& value) noexcept {
+	return []<size_t ...Is>(T&& value, std::index_sequence<Is...>) 
+	{
+		return std::array { (void(Is), std::forward<T>(value))... }; // 逗号表达式进行包展开
+	}(std::forward<T>(value), std::make_index_sequence<N>());
+}
 
-    template <typename T, std::size_t N>
-    constexpr auto make_array(T&& value) {
-        return make_array_impl<T, N>(std::forward<T>(value), std::make_index_sequence<N>());
-    }
-    // 字串连续，abca
-    int lengthOfLongestSubstring(std::string s) {
-        int size = s.size();
-        if (size <= 1) [[unlikely]] return size;
+constexpr int lengthOfLongestSubstring(std::string const &s) noexcept {
+	size_t const size = s.size();
+	if (size <= 1) [[unlikely]] return size;
 
-        // 索引查找表
-        auto charSet = make_array<int, 128>(-1);
-        int maxLen = 0;
-        #pragma GCC unroll 8
-        for (int left = 0, right = 0; right < size; ++right) {
-            char c = s[right];
-            if (int val = charSet[c] + 1; val > left) left = val; // 如果我们先前记录过，说明不为-1，说明重复，更新left
-            if (int currLen = right - left + 1; currLen > maxLen) maxLen = currLen;
-            charSet[c] = right; // 记录索引
-        }
-        return maxLen;
-    }
-};
+	// 查找表作为滑动窗口， ASCII映射下标，元素是字符串字符char位置索引
+	auto ASCII_TABLE = make_array<int, 128>(-1);
+
+	int maxLen = 0;
+	// 双指针更新滑动窗口
+	#pragma clang loop unroll_count(4)
+	for (int left = 0, right = 0; right < size; ++right) {
+		int const charIdx = s[right];
+		int const recorded = ASCII_TABLE[charIdx] + 1; // 查找表是 -1 初始化，left是0，所以 + 1，另一层含义 遇到重复元素需要更新下标
+		ASCII_TABLE[charIdx] = right;
+		
+		if (recorded > left) left = recorded;  // 如果我们先前记录过，说明不为-1，说明重复，更新left
+		if (int currLen = right - left + 1; currLen > maxLen) maxLen = currLen;
+	}
+	return maxLen;
+}
+
 /*
  * @lc app=leetcode.cn id=3 lang=cpp
  *

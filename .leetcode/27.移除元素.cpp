@@ -16,6 +16,10 @@ public:
         return nums.size();
     }
     int removeElement(vector<int>& nums, int val) {
+        auto it = std::partition(nums.begin(), nums.end(), [val](int n) { return n != val; });
+        return std::distance(nums.begin(), it);
+    }
+    int removeElement(vector<int>& nums, int val) {
         auto p1 = nums.begin();
         for (auto p2{p1}; p2 != nums.end(); ++p2) {
             if (*p2 == val) continue;

@@ -36,6 +36,7 @@ public:
             *hole = std::move(value);
         }
     }
+	// 严格弱序 不能是 <=  >=
     template<std::random_access_iterator RanIter, std::strict_weak_order<std::iter_value_t<RanIter>, std::iter_value_t<RanIter>> Compare>
     RanIter hoare_quick_select(RanIter start, RanIter end, size_t k, Compare comp)
     {
@@ -56,19 +57,19 @@ public:
 
         auto i = std::prev(left), j = pivot_pos;
         while (true) {
-            do { ++i; } while (comp(*i, pivot_val));
-            do { --j; } while (j > left && comp(pivot_val, *j));
+            do { ++i; } while (comp(*i, pivot_val)); // 严格弱序 < >， 最终i 会到达pivot_pos，*i 和 pivot_val相等，不会越界解引用
+            do { --j; } while (j > left && comp(pivot_val, *j)); // j是反向递减，因此需要 多加上 j > left 防止越界
             if (i >= j) break;
             std::iter_swap(i, j);
         }
         std::iter_swap(i, pivot_pos);
 
         if (auto target_pos = start + k; target_pos == i) return i;
-        else if (target_pos < i) return hoare_quick_select(std::next(i), end, target_pos - (i + 1), comp);
+        else if (target_pos < i) return hoare_quick_select(std::next(i), end, target_pos - (i + 1), comp); // 在后半部分，前半部分是 i，i + 1是后半部分起始，两个区间相减就是后半区间的k位置
         else return hoare_quick_select(start, i, k, comp);
     }
     int findKthLargest(vector<int>& nums, int k) {
-        return *hoare_quick_select(nums.begin(), nums.end(), k - 1, std::greater<>{});
+        return *hoare_quick_select(nums.begin(), nums.end(), k - 1, std::greater<>{}); // 第k大，数组下标从0开始，减个1
     }
 };
 

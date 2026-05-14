@@ -43,6 +43,11 @@ private:
     int maxGain(TreeNode* node, int& maxSum) {
         if (!node) return 0; // 空节点贡献为0
         
+		/*
+		左右子树的路径和只要比0小，那么不管当前节点的值是-，0，+，加上左右子树的最大负数，路径仍旧变小
+		所以需要和0取最大
+		*/
+		
         // 递归计算左右子树的最大贡献值
         // 只有在最大贡献值大于0时，才会选取对应子节点
         int leftGain = max(maxGain(node->left, maxSum), 0);

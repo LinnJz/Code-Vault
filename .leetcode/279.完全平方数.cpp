@@ -1,35 +1,32 @@
 class Solution {
 public:
     int numSquares(int n) {
-        std::vector<int> dp(n + 1, INT_MAX);
-        dp[0] = 0;
-        #pragma clang loop interleave(enable) unroll_count(8)
-        for(int i = 1; i * i <= n; ++i) { // 物品 完全平方数
-            #pragma clang loop vectorize(enable) interleave(enable) unroll_count(8)
+		int *dp = reinterpret_cast<int *>(::alloca((n + 1) * sizeof(int)));
+		dp[0] = 0, std::fill(dp + 1, dp + n + 1, INT_MAX);
+		
+        for(int i = 1; i * i <= n; ++i) { // 物品 是 完全平方数
+            #pragma clang loop unroll_count(8)
             for(int j = i * i; j <= n; ++j) { // 背包
-                if(std::size_t val = dp[j - i * i] + 1; val < dp[j]) dp[j] = val;
+                if(auto val = dp[j - i * i] + 1; val < dp[j]) dp[j] = val;
             }
         }
-        return dp.back();
+        return dp[n];
     }
 };
 
-// 更优
-class Solution {
-public:
-    int numSquares(int n) {
-        std::vector<int> dp(n + 1, INT_MAX);
-        dp[0] = 0;
-        #pragma clang loop interleave(enable) unroll_count(8)
-        for(int i = 1; i <= n; ++i) { // 背包
-            #pragma clang loop vectorize(enable) interleave(enable) unroll_count(8)
-            for(int j = 1; j * j <= i; ++j) { // 物品
-                if(std::size_t val = dp[i - j * j] + 1; val < dp[i]) dp[i] = val;
-            }
-        }
-        return dp.back();
-    }
-};
+int numSquares(int n) {
+	int *dp = reinterpret_cast<int *>(::alloca((n + 1) * sizeof(int)));
+	dp[0] = 0, std::fill(dp + 1, dp + n + 1, INT_MAX);
+
+	for (int j = 1; j <= n; ++j) { // 背包
+		#pragma clang loop unroll_count(8)
+		for (int i = 1; i * i <= j; ++i) { // 物品
+			if(auto val = dp[j - i * i] + 1; val < dp[j]) dp[j] = val;
+		}
+	}
+
+	return dp[n];
+}
 /*
  * @lc app=leetcode.cn id=279 lang=cpp
  *

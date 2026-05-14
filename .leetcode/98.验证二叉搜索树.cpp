@@ -1,38 +1,38 @@
 // 类似题：99. 恢复二叉搜索树
+bool isValidBST(TreeNode* root) {
+	TreeNode *curr = root, *prev = nullptr;  // 用于记录中序遍历的前一个节点
+	bool result = true;
+	while (curr) {
+		if (TreeNode *predecessor = curr->left; predecessor) {
+			while (predecessor->right && predecessor->right != curr) {
+				predecessor = predecessor->right;
+			}
 
-    bool isValidBST(TreeNode* root) {
-        TreeNode* curr = root;
-        TreeNode* prev = nullptr;  // 用于记录中序遍历的前一个节点
-        bool result = true; 
-        while(curr) {
-            TreeNode* predecessor = curr->left;
+			if (predecessor->right) {
+				predecessor->right = nullptr;
+				if (result && prev && prev->val >= curr->val) { // result &&短路径优化
+					result = false;
+				}
+				prev = curr;
+				curr = curr->right;
+			}
+			else {
+				predecessor->right = curr;
+				curr = curr->left;
+			}
+		}
+		else {
+			if (result && prev && prev->val >= curr->val) {
+				result = false;
+			}
+			prev = curr;
+			curr = curr->right;
+		}
+	}
 
-            if (predecessor) {
-                while(predecessor->right && predecessor->right != curr) predecessor = predecessor->right;
+	return result;
+}
 
-                if (predecessor->right) {
-                    predecessor->right = nullptr;
-                    if (prev && prev->val >= curr->val) {
-                        result = false;
-                    }
-                    prev = curr;
-                    curr = curr->right;
-                }
-                else {
-                    predecessor->right = curr;
-                    curr = curr->left;
-                }
-            }
-            else {
-                if (prev && prev->val >= curr->val) {
-                    result = false;
-                }
-                prev = curr;
-                curr = curr->right;
-            }
-        }
-        return result;
-    }
 /*
  * @lc app=leetcode.cn id=98 lang=cpp
  *

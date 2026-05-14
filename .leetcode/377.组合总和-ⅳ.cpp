@@ -1,15 +1,18 @@
-int combinationSum4(std::vector<int>& nums, int target) {
-    std::sort(nums.begin(), nums.end());
-    std::vector<size_t> dp(target + 1, 0);
-    dp[0] = 1;
+// 求排列数，先背包后物品
+int combinationSum4(vector<int>& nums, int target) {
+	std::sort(nums.begin(), nums.end());
 
-    for(int j = 1; j <= target; ++j) {
-        for(int num : nums) {
-            if (num > j) break;
-            dp[j] += dp[j - num];
-        }
-    }
-    return dp.back();
+	auto *dp = reinterpret_cast<uint32_t *>(::alloca((target + 1) * sizeof(uint32_t)));
+	dp[0] = 1, std::fill(dp, dp + target + 1, 0);
+
+	for (int j = 1; j <= target; ++j) {
+		// j 是背包容量
+		for (int num : nums) {
+			if (num <= j) dp[j] += dp[j - num];
+			else break;
+		}
+	}
+	return dp[target];
 }
 /*
  * @lc app=leetcode.cn id=377 lang=cpp

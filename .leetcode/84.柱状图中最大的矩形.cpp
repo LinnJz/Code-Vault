@@ -1,26 +1,55 @@
 ﻿int largestRectangleArea(vector<int>& heights) {
-   heights.emplace_back(0);
+	heights.emplace_back(0);
 
-   std::vector<int> stk; stk.reserve(heights.size());
-   stk.insert(stk.end(), {-1, 2});
-   int maxArea = 0;
-   for (int i = 0; i < heights.size(); ++i) {
-      while(stk.back() != -1) {
-         if (int currHeight = heights[stk.back()];
-            heights[i] < currHeight) 
-         {   
-            stk.pop_back();
-            if (int currArea = currHeight * (i - stk.back() - 1);
-               currArea > maxArea) 
-            {
-               maxArea = currArea;
-            }
-         }
-         else break;
-      }
-      stk.emplace_back(i);
-   }
-   return maxArea;
+	int *stk = reinterpret_cast<int *>(::alloca((heights.size() + 2) * sizeof(int)));
+	stk[0] = -1, stk[1] = 0;
+
+	int maxArea = 0, top = 1;
+	for (size_t i = 0; i < heights.size(); ++i) {
+		while (stk[top] != -1) {
+			if (int height = heights[stk[top]]; height > heights[i]){
+				if (int currArea = (i - stk[--top] - 1) * height; currArea > maxArea)
+					maxArea = currArea;
+			}
+			else break;
+		}
+
+		stk[++top] = i;
+	}
+	return maxArea;
+}
+//  ————————————
+  0 8 6 4 2 0 -1| 栈存储的是索引，这里方便比较我们以值展示
+//  ————————————
+i 5 4 3 2 1 0
+
+8 * (5 - 3 - 1) = 8
+6 * (5 - 2 - 1) = 12
+4 * (5 - 1 - 1) = 12
+2 * (5 - 0 - 1) = 8
+
+// 柱子向左右扩展找到第一个比他小的柱子，就能计算面积
+int largestRectangleArea(vector<int>& heights) {
+	heights.emplace_back(0); // 处理 heights 2 4 6 8 递增情况，一直加入栈无法计算，不在heights头插0，因为时间复杂度高
+
+	// 维持一个单调递减栈，当前元素 栈顶元素 栈顶的下方一个元素，找到当前元素、栈顶的下方一个元素均小于栈顶元素
+	// 我们就能够计算面积
+	std::vector<int> stk; stk.reserve(heights.size() + 2);
+	stk.insert(stk.begin(), {-1, 0}); // 栈头插 0 处理 heights递减情况，一直弹出无法计算，-1表示栈空，如果不加-1会遗漏元素
+	int maxArea = 0;
+	for (int i = 0; i < heights.size(); ++i) { // i 从0开始，如果是头插heights0，则从1开始
+		while (stk.back() != -1) {
+			if (int prev_height = heights[stk.back()]; prev_height > heights[i]) {
+				stk.pop_back();
+				if (int currArea = (i - stk.back() - 1) * prev_height; currArea > maxArea)
+					maxArea = currArea;
+			}
+			else break;
+		}
+
+		stk.emplace_back(i);
+	}
+	return maxArea;
 }
 
 // 双指针

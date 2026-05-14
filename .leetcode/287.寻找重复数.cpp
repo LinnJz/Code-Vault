@@ -41,14 +41,20 @@ int findDuplicate(vector<int>& nums) {
      0 1 2 3 4
      1->3->2->4->2
 */
-
+/*
+是的，快慢指针解法确实隐含了鸽巢原理。鸽巢原理指出：将 n+1 个整数放入 [1, n] 的区间内，
+至少有一个数会出现两次。在本题中，将数组下标视为节点，`nums[i]` 
+视为指向下一个节点的指针（因为值在 1~n 之间，可以安全作为新下标），
+那么重复的整数会导致两个不同的下标指向同一个值，从而在链表中形成环。
+快慢指针用于检测该环，并找到环的入口，即重复的数。
+因此，鸽巢原理保证了环必然存在，快慢指针则高效地定位了重复元素。
+*/
 class Solution {
 public:
     int findDuplicate(std::vector<int>& nums) {
         int slow{ 0 }, fast{ 0 };
 
         // 判断环是否存在
-        #pragma GCC unroll 16
         do {
             slow = nums[slow];
             fast = nums[nums[fast]];
@@ -56,7 +62,6 @@ public:
 
         slow = 0;
         // 找形成环的位置，即重复元素
-        #pragma GCC unroll 16
         while(slow != fast)
         {
             slow = nums[slow];

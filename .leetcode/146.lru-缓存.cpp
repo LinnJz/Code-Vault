@@ -5,72 +5,169 @@
  */
 
 // @lc code=start
+class LRUCache
+{
+public:
+  LRUCache(size_t capacity)
+      : m_Capacity { capacity }
+      , m_PoolResource(std::pmr::pool_options { 16, sizeof(std::pmr::unordered_map<int, decltype(m_List.begin())>) })
+      , m_List(&m_PoolResource)
+      , m_CacheMap(&m_PoolResource)
+  {
+  }
+
+  int get(int key)
+  {
+    auto findIt = m_CacheMap.find(key);
+    if (findIt == m_CacheMap.end())
+      return -1;
+
+    m_List.splice(m_List.begin(), m_List, findIt->second);
+
+    return findIt->second->val;
+  }
+
+  void put(int key, int value)
+  {
+    if (auto findIt = m_CacheMap.find(key); findIt != m_CacheMap.end())
+    {
+      findIt->second->val = value;
+      m_List.splice(m_List.begin(), m_List, findIt->second);
+
+      return;
+    }
+    if (m_List.size() >= m_Capacity) [[unlikely]]
+    {
+      m_CacheMap.erase(m_List.back().key);
+      m_List.pop_back();
+    }
+    m_List.emplace_front(key, value);
+    m_CacheMap.try_emplace(key, m_List.begin());
+  }
+
+private:
+  struct Node
+  {
+    int key;
+    int val;
+  };
+
+  size_t                                                 m_Capacity { 0 };
+  std::pmr::unsynchronized_pool_resource                 m_PoolResource;
+  std::pmr::list<Node>                                   m_List;
+  std::pmr::unordered_map<int, decltype(m_List.begin())> m_CacheMap;
+};
+
+// @lc code=end
 class LRUCache {
 public:
-    LRUCache(int capacity) : capacity_(capacity) {}
-    
-    int get(int key) {
-        auto it = cache_map_.find(key);
-        if (it == cache_map_.end()) {
-            return -1; // 未找到
+    LRUCache(size_t capacity) 
+        : m_Capacity(capacity)
+        , m_Nodes(std::make_unique_for_overwrite<Node[]>(capacity))
+        , m_Size(0)
+        , m_Head(-1)
+        , m_Tail(-1)
+        , m_FreeHead(0)
+    {
+        // 初始化空闲链表：所有节点串在一起，索引从0到capacity-1
+        for (size_t i = 0; i < capacity - 1; ++i) {
+            m_Nodes[i].next = static_cast<int>(i + 1);
         }
-        
-        // 移动到最近使用的位置
-        items_list_.splice(items_list_.begin(), items_list_, it->second);
-        return it->second->value;
+        m_Nodes[capacity - 1].next = -1; // 最后一个节点无下一个空闲节点
     }
-    
+
+    int get(int key) {
+        auto it = m_KeyToIdx.find(key);
+        if (it == m_KeyToIdx.end()) return -1;
+
+        int idx = it->second;
+        // 移动到头部
+        moveToHead(idx);
+        return m_Nodes[idx].val;
+    }
+
     void put(int key, int value) {
-        auto it = cache_map_.find(key);
-        if (it != cache_map_.end()) {
-            // 键已存在，更新值并移动到最近使用的位置
-            it->second->value = value;
-            items_list_.splice(items_list_.begin(), items_list_, it->second);
+        auto it = m_KeyToIdx.find(key);
+        if (it != m_KeyToIdx.end()) {
+            // 已存在：更新值并移动到头部
+            int idx = it->second;
+            m_Nodes[idx].val = value;
+            moveToHead(idx);
             return;
         }
-        
-        // 如果缓存已满，移除最久未使用的项
-        if (items_list_.size() >= capacity_) {
-            auto& last = items_list_.back();
-            cache_map_.erase(last.key);
-            items_list_.pop_back();
+
+        // 新节点：尝试分配空闲节点
+        int newIdx = allocateNode();
+        if (newIdx == -1) {
+            // 没有空闲节点，淘汰尾部节点
+            newIdx = m_Tail;
+            m_KeyToIdx.erase(m_Nodes[newIdx].key);
+            removeNode(newIdx);   // 从链表中摘下
         }
-        
-        // 添加新项到最近使用的位置
-        items_list_.push_front({key, value});
-        cache_map_.try_emplace(key, items_list_.begin());
+        // 复用/新节点赋值
+        m_Nodes[newIdx].key = key;
+        m_Nodes[newIdx].val = value;
+        m_KeyToIdx[key] = newIdx;
+        // 插入到头部
+        addToHead(newIdx);
     }
 
-    // 检查键是否存在于缓存中
-    bool contains(int key) const {
-        return cache_map_.find(key) != cache_map_.end();
-    }
-    
-    // 获取当前缓存大小
-    size_t size() const {
-        return items_list_.size();
-    }
-    
-    // 获取缓存容量
-    size_t capacity() const {
-        return capacity_;
-    }
-    
-    // 清空缓存
-    void clear() {
-        items_list_.clear();
-        cache_map_.clear();
-    }
 private:
-    struct Item {
-        int key;
-        int value;
+    struct Node {
+        int key = 0;
+        int val = 0;
+        int prev = -1;
+        int next = -1;
     };
-    
-    size_t capacity_;
-    std::list<Item> items_list_;
-    std::unordered_map<int, typename std::list<Item>::iterator> cache_map_;
 
+    size_t m_Capacity;
+    std::unique_ptr<Node[]> m_Nodes;            // 连续存储，缓存友好
+    std::unordered_map<int, int> m_KeyToIdx; // key -> node index
+    int m_Head, m_Tail;
+    int m_FreeHead;   // 空闲链表头索引，-1表示无空闲节点
+    size_t m_Size;    // 已使用节点数（可选，仅用于断言）
+
+    // 从链表中移除节点（不释放资源，仅改前后指针）
+    void removeNode(int idx) {
+        Node& node = m_Nodes[idx];
+        if (node.prev != -1) m_Nodes[node.prev].next = node.next;
+        else m_Head = node.next;
+        if (node.next != -1) m_Nodes[node.next].prev = node.prev;
+        else m_Tail = node.prev;
+    }
+
+    // 将节点插入到链表头部
+    void addToHead(int idx) {
+        Node& node = m_Nodes[idx];
+        node.prev = -1;
+        node.next = m_Head;
+        if (m_Head != -1) m_Nodes[m_Head].prev = idx;
+        m_Head = idx;
+        if (m_Tail == -1) m_Tail = idx;
+    }
+
+    // 移动到头部（相当于先移除再加到头部）
+    void moveToHead(int idx) {
+        if (m_Head == idx) return;
+        removeNode(idx);
+        addToHead(idx);
+    }
+
+    // 分配新节点：从空闲链表取一个，若无空闲则返回-1
+    int allocateNode() {
+        if (m_FreeHead == -1) return -1;
+        int idx = m_FreeHead;
+        m_FreeHead = m_Nodes[idx].next;
+        m_Nodes[idx].next = -1;  // 重置，后续addToHead会设置
+        return idx;
+    }
+
+    // 可选：释放节点回空闲链表（本例未显式使用，因为淘汰时直接复用淘汰的节点）
+    // 但为了完整性，这里实现一个，本类中不需要调用
+    void freeNode(int idx) {
+        m_Nodes[idx].next = m_FreeHead;
+        m_FreeHead = idx;
+    }
 };
 #include <list>
 #include <optional>
@@ -349,7 +446,6 @@ private:
  * int param_1 = obj->get(key);
  * obj->put(key,value);
  */
-// @lc code=end
 
 /*
  * LRUCache11 - a templated C++11 based LRU cache class that allows

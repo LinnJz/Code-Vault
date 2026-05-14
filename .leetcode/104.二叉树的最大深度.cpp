@@ -13,56 +13,39 @@
 class Solution {
 public:
     int maxDepth(TreeNode* root) {
-        // 处理空树的情况
-        if (root == nullptr) return 0;
-        
-        int maxDepth = 0;        // 记录最大深度
-        int currentDepth = 0;    // 当前节点的深度
-        int rightPathLength = 0; // 右路径长度
-        TreeNode* curr = root;
-        TreeNode* predecessor = nullptr;
-        
-        while (curr != nullptr) {
-            if (curr->left == nullptr) {
-                // 没有左子树，直接转向右子树
-                ++currentDepth;
-                // 更新最大深度
-                if (currentDepth > maxDepth) {
-                    maxDepth = currentDepth;
-                }
-                curr = curr->right;
-            }
-            else {
+        if (!root) return 0;
+
+        int currDepth = 0, maxDepth = 0;
+        TreeNode *curr = root;
+        while (curr) {
+            if (TreeNode *predecessor = curr->left; predecessor) {
                 // 找到当前节点在中序遍历下的前驱节点
-                rightPathLength = 1;
-                predecessor = curr->left;
-                
+                int rightPathDepth = 1;
+				
                 // 寻找左子树的最右节点
-                while (predecessor->right != nullptr && predecessor->right != curr) {
-                    predecessor = predecessor->right;
-                    ++rightPathLength;
-                }
+                while (predecessor->right && predecessor->right != curr)
+                    predecessor = predecessor->right, ++rightPathDepth;
                 
-                if (predecessor->right == nullptr) {
-                    // 第一次访问，建立临时链接
-                    predecessor->right = curr;
-                    ++currentDepth;
-                    // 更新最大深度
-                    if (currentDepth > maxDepth) {
-                        maxDepth = currentDepth;
-                    }
-                    curr = curr->left;
-                }
-                else {
+                if (predecessor->right) {
                     // 第二次访问，断开临时链接
                     predecessor->right = nullptr;
                     // 调整深度并转向右子树
-                    currentDepth -= rightPathLength;
+                    currDepth -= rightPathDepth;
                     curr = curr->right;
                 }
+                else {
+                    // 第一次访问，建立临时链接
+                    predecessor->right = curr;
+                    if (++currDepth > maxDepth) maxDepth = currDepth;
+                    curr = curr->left;
+                }
+            }
+            else {
+				// 没有左子树，直接转向右子树
+                if (++currDepth > maxDepth) maxDepth = currDepth;
+                curr = curr->right;
             }
         }
-        
         return maxDepth;
     }
 };

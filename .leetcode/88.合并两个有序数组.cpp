@@ -10,34 +10,27 @@
 using std::vector;
 class Solution {
 public:
-    void merge(vector<int>& nums1, int m, vector<int>& nums2, int n) {
-        if (n == 0) return;
-        if (m == 0) {
+    void merge(std::vector<int>& nums1, int m, std::vector<int>& nums2, int n) {
+        if(n == 0) [[unlikely]] return;
+        if(m == 0) [[unlikely]] {
             std::swap(nums1, nums2);
-            //std::copy(nums2.begin(), nums2.end(), nums1.begin());
             return;
         }
-        auto it = nums1.rbegin(), it1 = nums1.rbegin() + n, it2 = nums2.rbegin();
-        for ( ; it2 != nums2.rend() && it1 != nums1.rend(); ++it)
-        {
+        auto back = nums1.rbegin(), it1 = back + n, it2 = nums2.rbegin();
+        #pragma clang loop unroll_count(4)
+        for ( ; it1 != nums1.rend() && it2 != nums2.rend(); ) {
             if (*it1 < *it2) {
-                std::iter_swap(it2, it);
-                ++it2;
+                *back = *it2, ++back, ++it2;
             }
             else if (*it1 > *it2) {
-                std::iter_swap(it1, it);
-                ++it1;
+                *back = *it1, ++back, ++it1;
             }
-            else {
-                std::iter_swap(it2, it);
-                ++it;
-                std::iter_swap(it1, it);
-                ++it1, ++it2;
+            else  {  
+                *back = *it1, ++back, ++it1;
+                *back = *it2, ++back, ++it2;
             }
         }
-        if (it2 != nums2.rend()) {
-            std::copy(it2, nums2.rend(), it);
-        }
+        if (it2 != nums2.rend()) std::copy(it2, nums2.rend(), back);
     }
 };
 // @lc code=end

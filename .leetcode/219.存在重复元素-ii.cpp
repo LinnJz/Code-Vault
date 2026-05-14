@@ -9,7 +9,7 @@ class Solution {
 public:
 // 滑动窗口优化空间
     bool containsNearbyDuplicate(vector<int>& nums, int k) {
-        std::unordered_set<int> filter; filter.reserve(nums.size());
+        std::unordered_set<int> filter; filter.reserve(k + );
         #pragma clang loop unroll_count(8)
         for (auto [idx, val] : nums | std::views::enumerate) {
             if (!filter.emplace(val).second) return true;
