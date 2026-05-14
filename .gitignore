@@ -11,6 +11,7 @@
 **/out
 **/cpp_new_features-main
 **/games101
+**/SIMD
 
 # redis rdb
 *.rdb
