@@ -7,6 +7,7 @@ FindVcpkgPackage(protobuf LINKAGE DYNAMIC REQUIRED CONFIG)
 FindVcpkgPackage(pugixml LINKAGE STATIC REQUIRED CONFIG)
 FindVcpkgPackage(TBB LINKAGE STATIC REQUIRED CONFIG COMPONENTS tbb tbbmalloc tbbmalloc_proxy)
 FindVcpkgPackage(yyjson LINKAGE STATIC REQUIRED CONFIG)
+FindVcpkgPackage(glaze LINKAGE DYNAMIC REQUIRED CONFIG)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     #absl::base
@@ -18,6 +19,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     #protobuf::libprotobuf
     TBB::tbb
     TBB::tbbmalloc
+    glaze::glaze
     #yyjson::yyjson
 )
 target_compile_definitions(${PROJECT_NAME} PRIVATE CRYPTOPP_ENABLE_NAMESPACE_WEAK=1)
