@@ -15,7 +15,7 @@
 |                     | `Application.ExecutablePath`                      | ✅ 是                    | 需要引用 `System.Windows.Forms` 命名空间。                   |
 |                     | `Environment.GetCommandLineArgs()[0]`             | ✅ 是                    | 效果与`Process.GetCurrentProcess().MainModule.FileName`类似，存在相同的情况。 |
 
-### 🛠️ 使用方法与示例
+### 使用方法与示例
 
 在代码中，你可以直接使用上述方法。以下是几个常见场景的示例：
 
@@ -33,7 +33,7 @@ string configFilePath = Path.Combine(directoryPath, "config.json");
 Console.WriteLine($"配置文件路径：{configFilePath}");
 ```
 
-### 💎 选择建议与注意事项
+### 选择建议与注意事项
 
 - **通用且可靠的选择**：
   - 获取目录，用 **`AppDomain.CurrentDomain.BaseDirectory`**。
@@ -516,7 +516,7 @@ public:
 
 ## 推荐选择策略
 
-### 🥇 **首选推荐：gRPC**
+### **首选推荐：gRPC**
 ```bash
 # 适合大多数场景
 - 跨平台需求 ✅
@@ -525,7 +525,7 @@ public:
 - 未来扩展性 ✅
 ```
 
-### 🥈 **备选方案**
+### 备选方案**
 - **极致性能** → 共享内存
 - **Windows紧密集成** → C++/CLI
 - **简单通信** → IPC管道
@@ -538,3 +538,101 @@ public:
 4. **Windows专用**：可考虑 C++/CLI，但注意技术趋势
 
 你具体是什么应用场景？我可以给出更针对性的建议。
+
+# NuGet
+
+NuGet 包默认的下载位置在C盘用户路径，有几种方法可以实现设置为其他路径，防止C盘存储空间不够用，这几种方式配置是全局有效的，改一次以后所有项目都能自动识别。
+
+## 方法一：通过系统环境变量配置 (推荐，优先级最高)
+
+这个方法是通过设置系统环境变量来指定新的包存放路径，一旦设置好，对所有工具和项目都有效。
+
+1. **添加系统环境变量**：
+
+   - 在 Windows 中搜索“环境变量”，打开“编辑系统环境变量”。
+   - 点击“环境变量”，在“**系统变量**”区域点击“**新建**”。
+   - 创建如下变量，变量值换成你的目标路径，比如 `D:\NuGet\Packages`。
+     - 变量名：`NUGET_PACKAGES`
+     - 变量值：`D:\NuGet\Packages` (请替换为你自己的路径)
+
+   **补充建议**：
+   为了更全面地管理 NuGet 缓存，你可以考虑将所有相关文件夹都迁移到新位置，这是很多开发者选择的**终极方案**。可以在系统变量中再添加以下几个：
+
+   | 变量名                     | 用途          | 建议值（示例）           |
+   | -------------------------- | ------------- | ------------------------ |
+   | `NUGET_PACKAGES`           | 全局包文件夹  | `D:\NuGet\Packages`      |
+   | `NUGET_HTTP_CACHE_PATH`    | HTTP 请求缓存 | `D:\NuGet\v3-cache`      |
+   | `NUGET_PLUGINS_CACHE_PATH` | 插件缓存      | `D:\NuGet\plugins-cache` |
+   | `NUGET_SCRATCH`            | 临时文件夹    | `D:\NuGet\NuGetScratch`  |
+
+   这几个文件夹默认加起来也可能占用不少空间，一次性迁移更彻底。
+
+   添加完变量后，务必点击“确定”保存所有窗口。
+
+2. **验证配置**：
+   打开一个新的命令提示符 (cmd) 或 PowerShell 窗口，运行以下命令来查看当前的 NuGet 文件夹位置：
+
+   ```bash
+   dotnet nuget locals all --list
+   ```
+
+   
+
+   如果输出中 `global-packages` 的路径已经变为你刚刚设置的新路径（例如 `D:\NuGet\Packages`），就说明配置成功了。
+
+##  方法二：通过修改 NuGet.Config 文件 (备选)
+
+如果你不想设置环境变量，也可以通过修改 NuGet 的配置文件来实现。
+
+1. **找到配置文件**：
+   打开用户级的 NuGet 配置文件，它的默认路径是：
+
+   ```text
+   C:\Users\<你的用户名>\AppData\Roaming\NuGet\NuGet.Config
+   ```
+
+   
+
+   也可以直接在资源管理器的地址栏输入 `%AppData%\NuGet\` 并回车，就能快速找到这个文件。
+
+2. **编辑配置文件**：
+   用记事本等文本编辑器打开 `NuGet.Config` 文件。在 `<configuration>` 节点内，如果存在 `<config>` 节点，就在它里面添加；如果不存在，就新建一个。最终效果如下：
+
+   ```xml
+   <?xml version="1.0" encoding="utf-8"?>
+   <configuration>
+     ...
+     <config>
+       <add key="globalPackagesFolder" value="D:\NuGet\Packages" />
+     </config>
+     ...
+   </configuration>
+   ```
+
+   请务必将 `value` 的值替换为你想要的新路径。
+
+3. **验证配置**：
+   保存文件后，重新打开一个新的命令行窗口，运行 `dotnet nuget locals all --list` 命令，检查 `global-packages` 路径是否已生效。
+
+### 清理旧文件与迁移现有包
+
+完成以上配置后，新下载的包都会存到新位置。对于 C 盘原有的包，建议按以下步骤处理：
+
+- **清理旧的缓存文件**：如果你想立即释放 C 盘空间，**但不想保留之前下载的包**，可以运行下面的命令安全地清理所有 NuGet 缓存：
+
+  ```bash
+  dotnet nuget locals all --clear
+  ```
+
+  这个操作是安全的，下次打开项目时，缺失的包会自动被重新下载到你的**新目录**中。
+
+- **迁移现有包 (可选)**：如果你有很多包，不想重新下载，可以将旧目录手动复制到新位置。操作路径如下：
+
+  1. 找到旧的包目录：`C:\Users\<你的用户名>\.nuget\packages`。
+  2. 将其完整地复制到你的新目录（例如 `D:\NuGet\Packages`）。
+  3. 复制完成后，你可以放心地删除 C 盘原有的包文件夹。
+
+### 重要注意事项与备选方案
+
+- **配置优先级**：`NUGET_PACKAGES` **环境变量的优先级高于** `NuGet.Config` 文件中的 `globalPackagesFolder` 设置。如果两者都配置了，会以环境变量为准。
+- **Visual Studio 离线包**：部分 Visual Studio 的离线安装包可能仍会占用 C 盘空间。你可以在 **Visual Studio 的“选项”** 中，找到 **“NuGet 包管理器”** -> **“程序包源”**，检查和修改“Microsoft Visual Studio Offline Packages”的路径

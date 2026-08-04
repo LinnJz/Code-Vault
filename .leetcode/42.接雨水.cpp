@@ -11,10 +11,13 @@ public:
 
             if (leftHeightMax < currLeftHeight) leftHeightMax = currLeftHeight;
             if (rightHeightMax < currRightHeight) rightHeightMax = currRightHeight;
-            // 为什么能够取决于左边最大，难道左边最大如果比currRightHeight大呢，不就取决于currRightHeight的高度了吗
-            // 因为你要知道，我们是从最左 和 最右 向中间移动的，如果 leftHeightMax > currRightHeight，
-            // 说明 必然 先出现 currLeftHeight > currRightHeight 情况 处理完成之后才会出现currLeftHeight < currRightHeight
-            // 类似 盛最多水的容器 的思路，所以始终能够计算当前下标的木桶所容纳多少水
+            // 为什么能够 leftHeightMax - currLeftHeight
+			// 因为双指针向中间靠拢，我们通过计算两侧最大值，然后根据当前的双指针比较
+			// 即使中间部分未知高度（木桶一侧的高currHeight，但是不知道另一侧的高未遍历），但是因为我们知道了当前全局最高的木板
+			// 所以可以贪心，最小先收集当前的水，然后不断向中间这样做，每次收集一小部分最终汇总
+			
+			// 全局最大总是有当前的curr更新而来，所以 leftHeightMax总是大于currLeftHeight，rightHeightMax总是大于currRightHeight
+			// 当currLeftHeight < currRightHeight时，确定currRightHeight木板，然后根据leftHeightMax计算当前最小收集水
             if (currLeftHeight < currRightHeight) {
                 result += leftHeightMax - currLeftHeight;
                 ++left;

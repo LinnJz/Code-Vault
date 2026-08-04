@@ -17,7 +17,7 @@ AlignAfterOpenBracket: Align
 AlignArrayOfStructures: Left
 AlignConsecutiveAssignments: Consecutive
 AlignConsecutiveBitFields: AcrossEmptyLinesAndComments
-AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveDeclarations: None
 AlignConsecutiveMacros: AcrossComments
 AlignConsecutiveShortCaseStatements:
   Enabled: true

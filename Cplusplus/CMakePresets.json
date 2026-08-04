@@ -1,4 +1,4 @@
-﻿{
+{
   "version": 9,
   "cmakeMinimumRequired": {
     "major": 3,
@@ -7,25 +7,13 @@
   },
   "configurePresets": [
     {
-      "name": "clang-cl-base",
+      "name": "msvc-base",
       "hidden": true,
-      "displayName": "Base Configuration",
-      "description": "Base preset for Clang-Cl (MSVC-compatible) x64 builds using Ninja",
+      "displayName": "Base Configuration for msvc",
+      "description": "Base preset for msvc on windows",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "installDir": "${sourceDir}/out/install/${presetName}",
-      "generator": "Ninja",
-      "architecture": {
-        "value": "x64",
-        "strategy": "external"
-      },
-      "toolset": {
-        "value": "v143",
-        "strategy": "external"
-      },
-      "environment": {
-        "CC": "cl",
-        "CXX": "cl"
-      },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "cl.exe",
         "CMAKE_CXX_COMPILER": "cl.exe",
@@ -37,24 +25,26 @@
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
+      "toolset": {
+        "value": "v145",
+        "strategy": "external"
+      },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
-          "hostOS": [ "Windows" ],
           "intelliSenseMode": "windows-msvc-x64",
-          "intelliSenseOptions": { "useCompilerDefaults": true },
-          "enableMicrosoftCodeAnalysis": true,
-          "enableClangTidyCodeAnalysis": true
-        },
-        "microsoft.com/VisualStudioRemoteSettings/CMake/1.0": {
-          "sourceDir": "$env{HOME}/.vs/$ms{projectDirName}"
+          "someCustomFlag": true
         }
+      },
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
       }
     },
     {
-      "name": "clang_cl_x64_debug",
-      "inherits": "clang-cl-base",
-      "displayName": "X64 Debug Clang-Cl",
-      "description": "Debug build with full symbols",
+      "name": "msvc_x64_debug",
+      "inherits": "msvc-base",
+      "displayName": "x64 Debug msvc",
+      "description": "Debug build for msvc on windows",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_FLAGS_DEBUG": "/Od /Zi /MDd"
@@ -64,10 +54,10 @@
       }
     },
     {
-      "name": "clang_cl_x64_relwithdebinfo",
-      "inherits": "clang-cl-base",
-      "displayName": "X64 RelWithDebInfo Clang-Cl",
-      "description": "RelWithDebInfo build with full symbols",
+      "name": "msvc_x64_relwithdebinfo",
+      "inherits": "msvc-base",
+      "displayName": "x64 RelWithDebInfo msvc",
+      "description": "RelWithDebInfo build for msvc on windows",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "/O2 /Zi /MD"
@@ -77,10 +67,10 @@
       }
     },
     {
-      "name": "clang_cl_x64_release",
-      "inherits": "clang-cl-base",
-      "displayName": "X64 Release Clang-Cl",
-      "description": "Release build with full symbols",
+      "name": "msvc_x64_release",
+      "inherits": "msvc-base",
+      "displayName": "x64 Release msvc",
+      "description": "Release build for msvc on windows",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CXX_FLAGS_RELEASE": "/O2 /MD"

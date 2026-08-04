@@ -43,14 +43,14 @@ public:
         剩余字符数分析：
             s中还有 sLen - i 个字符未处理
 
-            t中还有 tLen - j + 1 个字符需要匹配（当前要匹配t[j]）
+            t中还有 tLen - j 个字符需要匹配（当前要匹配t[j]）
 
         可行性条件：
         要想成功匹配，必须满足：s中剩余字符数 ≥ t中剩余字符数
-        sLen - i ≥ tLen - j + 1
+        sLen - i ≥ tLen - j
 
         整理得：
-        j ≥ tLen - sLen + i + 1
+        j ≥ tLen - sLen + i
 
     代码中的简化：
         代码中使用了 tLen - sLen + i，因为内层循环是 j--（从大到小），所以当 j < tLen - sLen + i 时，剩余的字符肯定不够完成匹配。

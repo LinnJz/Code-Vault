@@ -1,4 +1,43 @@
 ﻿int largestRectangleArea(vector<int>& heights) {
+	size_t const size = heights.size();
+	int *stk = reinterpret_cast<int *>(::alloca((size + 2) * sizeof(int)));
+	stk[0] = -1, stk[1] = 0; // -1哨兵，头插0直接入栈（处理单调递减情况），不修改heights
+
+	int maxArea = 0, top = 1;
+	for (auto i = 0uz; i < size; ++i) {
+		while (stk[top] != -1) {
+			// 防止访存heights[stk[top]]两次？是否有必要这样写待考究，脑测这样写更优？
+			// -O2 下编译器会使用 公共子表达式消除CSE进行优化，其实没必要写if else，这里保留
+			if (int height = heights[stk[top]]; height > heights[i]) {
+				if (int currArea = (i - stk[--top] - 1) * height; currArea > maxArea)
+					maxArea = currArea;
+			} else break;
+		}
+
+		stk[++top] = i;
+	}
+/*
+// 单调递增情况，这种写法无法覆盖[2,1,2]
+if (top == size + 1) [[unlikely]] {
+	#pragma clang loop unroll_count(8)
+	for (int i = 0; i < size; ++i) {
+		if (int currArea = heights[i] * (size - i); currArea > maxArea)
+			maxArea = currArea;
+	}
+}
+*/
+// 处理单调递减以及部分特殊用例（最终形成的stk栈是 单调递减的 -1，如 2 1 -1 还需要一个0进行计算），不需要heights尾插0
+	while (top > 0) {
+		int height = heights[stk[top]];
+		--top;
+		int left = stk[top];
+		if (int currArea = (size - left - 1) * height; currArea > maxArea) 
+			maxArea = currArea;
+	}
+	return maxArea;
+}
+
+int largestRectangleArea(vector<int>& heights) {
 	heights.emplace_back(0);
 
 	int *stk = reinterpret_cast<int *>(::alloca((heights.size() + 2) * sizeof(int)));

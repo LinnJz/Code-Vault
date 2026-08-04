@@ -33,7 +33,7 @@ public:
 		// 左右子树的乘积和是种类（不同组合）
         for (int i = 2; i <= n; ++i) {
             for (int j = 0; j < i; ++j) {
-                dp[i] += dp[j] * dp[i - j - 1];
+                dp[i] += dp[j] * dp[i - j - 1]; // -1根节点占用一个节点
             }
         }
         return dp[n];

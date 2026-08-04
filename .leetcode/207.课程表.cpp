@@ -1,3 +1,11 @@
+/*
+算法使用拓扑排序。首先统计每个节点的入度（inDegree）和出度（用差分数组 outDegree 记录每个节点的出边条数）。
+对 outDegree 做前缀和，得到每个节点出边在 edges 数组中的起始偏移量。
+然后分配 edges 数组，利用 outDegree 的副本作为游标，将每条边的终点按起点分组填入 edges。
+接着，将所有入度为 0 的节点入队（复用 currPos 作为队列）。
+之后循环取出队首节点 u，遍历 u 的所有出边（即 edges[outDegree[u] .. outDegree[u+1]-1]），
+对每个终点 v 执行 --inDegree[v]，若变为 0 则入队。最后若访问节点数等于总课程数，则队列顺序即为拓扑排序结果，否则返回空。
+*/
 bool canFinish(int numCourses, vector<vector<int>>& prerequisites) {
 	constexpr size_t intSize = sizeof(int);
 	// 入度出度，下标是课程编号
@@ -20,6 +28,7 @@ bool canFinish(int numCourses, vector<vector<int>>& prerequisites) {
 		outDegree[i + 1] += outDegree[i];
 	}
 
+	// edges存储的是按出度排序的邻接表
 	// 节点映射，值是u，下标是v，u指向v，表示某节点的后继节点范围
 	int *edges =  reinterpret_cast<int *>(::alloca(prerequisites.size() * intSize));
 	// 拷贝outDegree给currPos，

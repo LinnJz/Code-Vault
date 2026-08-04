@@ -18,7 +18,7 @@ constexpr int lengthOfLongestSubstring(std::string const &s) noexcept {
 	#pragma clang loop unroll_count(4)
 	for (int left = 0, right = 0; right < size; ++right) {
 		int const charIdx = s[right];
-		int const recorded = ASCII_TABLE[charIdx] + 1; // 查找表是 -1 初始化，left是0，所以 + 1，另一层含义 遇到重复元素需要更新下标
+		int const recorded = ASCII_TABLE[charIdx] + 1; // 查找表是 -1 初始化，left是0，所以 + 1，另一层含义 若该字符重复，窗口左边界至少要移动到“上次出现位置的下一个位置”，才能保证窗口内无重复。
 		ASCII_TABLE[charIdx] = right;
 		
 		if (recorded > left) left = recorded;  // 如果我们先前记录过，说明不为-1，说明重复，更新left

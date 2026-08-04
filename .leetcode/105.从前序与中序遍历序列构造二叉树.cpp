@@ -66,6 +66,23 @@ TreeNode* build(vector<int>& preorder, int preStart, int preEnd,
  *     TreeNode(int x, TreeNode *left, TreeNode *right) : val(x), left(left), right(right) {}
  * };
  */
+ /*
+ leftSubtreeSize - 1 是用来计算左子树在前序数组中的结束索引的偏移量。
+
+原因：
+
+    前序遍历的结构是：[根节点] + [左子树的前序遍历] + [右子树的前序遍历]。
+
+    当前根节点在 preorder[preStart]，所以左子树的前序遍历从 preStart + 1 开始。
+
+    左子树的节点个数为 leftSubtreeSize（由中序数组计算得出）。
+
+    因此，左子树在前序数组中的区间为 [preStart + 1, preStart + leftSubtreeSize]，其结束索引 = preStart + leftSubtreeSize。
+
+    在代码中，结束索引被写为 preStart + 1 + (leftSubtreeSize - 1)，即 preStart + leftSubtreeSize。这里的 leftSubtreeSize - 1 是从起始索引 preStart + 1 出发，要覆盖 leftSubtreeSize 个元素所需的“最后一项的偏移量”（因为起始偏移为1，加上 leftSubtreeSize-1 正好是第 leftSubtreeSize 个元素）。
+
+所以，- 1 是为了正确计算包含 leftSubtreeSize 个节点的区间的右边界，确保不会多取或少取节点。
+ */
 class Solution {
 public:
     TreeNode* buildTree(vector<int>& preorder, vector<int>& inorder) {

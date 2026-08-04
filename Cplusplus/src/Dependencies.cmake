@@ -8,9 +8,12 @@ FindVcpkgPackage(pugixml LINKAGE STATIC REQUIRED CONFIG)
 FindVcpkgPackage(TBB LINKAGE STATIC REQUIRED CONFIG COMPONENTS tbb tbbmalloc tbbmalloc_proxy)
 FindVcpkgPackage(yyjson LINKAGE STATIC REQUIRED CONFIG)
 FindVcpkgPackage(glaze LINKAGE DYNAMIC REQUIRED CONFIG)
+FindVcpkgPackage(folly LINKAGE STATIC REQUIRED CONFIG)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     #absl::base
+    Folly::folly
+    absl::inlined_vector
     absl::flat_hash_set
     benchmark::benchmark
     benchmark::benchmark_main

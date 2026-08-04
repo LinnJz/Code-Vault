@@ -8,7 +8,7 @@ Usage:
 Options:
     --compiler          Compiler type: gcc, clang, msvc, clang-cl (required)
     --platform          Target platform: windows, linux, macos (default: auto-detect)
-    --msvc-toolset      MSVC toolset version: v143 (VS2022) or v142 (VS2019) (default: v143)
+    --msvc-toolset      MSVC toolset version: v145 (VS2026) v143 (VS2022) or v142 (VS2019) (default: v145)
     --generator         CMake generator (default: Ninja)
     --output            Output file path (default: CMakePresets.json)
     --arch              Target architecture (default: x64)
@@ -234,7 +234,7 @@ def main():
                         help="Compiler type")
     parser.add_argument("--platform", choices=["windows", "linux", "macos"],
                         default=detect_platform(), help="Target platform (auto-detected if omitted)")
-    parser.add_argument("--msvc-toolset", default="v143", choices=["v142", "v143"],
+    parser.add_argument("--msvc-toolset", default="v145", choices=["v142", "v143", "v145"],
                         help="MSVC toolset version (only used for msvc compiler)")
     parser.add_argument("--generator", default="Ninja", help="CMake generator (default: Ninja)")
     parser.add_argument("--output", default="CMakePresets.json", help="Output file path")

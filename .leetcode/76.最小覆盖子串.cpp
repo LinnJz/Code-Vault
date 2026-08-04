@@ -2,6 +2,7 @@
 	size_t const sLen = s.size(), tLen = t.size();
 	if (tLen > sLen) [[unlikely]] return {};
 
+	//window 数组存储的是“差额”（剩余需求）
 	std::array<int, 128> window{};
 	// #pragma clang loop unroll_count(8)
 	// for (char c : t) ++window[c];
@@ -18,6 +19,8 @@
 	// 滑动窗口
 	#pragma clang loop unroll_count(4)
 	for (size_t left = 0, right = 0; right < sLen; ++right) {
+		// 右指针扩张（right）：只关心“是否补完”，执行 --window[s[right]]，意思是“消耗掉一个需求”。
+		//结论：重复字符的“数量要求”被编码进了 window 的数值里。mainValid 只在“数量达标”的那一瞬间增加。
 		// char add = s[right];
 		mainVaild += (--window[s[right]] == 0); // 如果s的字符在 t存在，--t的字符表示匹配，如果等于0说明满足一个unique字符
 		
@@ -26,7 +29,7 @@
 			if (int currLen = right - left + 1; currLen < minSubstrLen) {
 				minSubstrLen = currLen, minSubstrPos = left;
 			}
-
+			//左指针收缩（left）：只关心“是否缺货”，执行 ++window[s[left]]，意思是“还回去一个需求”。
 			// char del = s[left++];
 			mainVaild -= (++window[s[left++]] > 0); // 收缩，删掉s的left，意味着该字符需要重新加回来，如果>0不满足unique字符个数（==0），说明有差异-1不能继续循环了
 		}

@@ -1,6 +1,32 @@
 #include <vector>
 #include <algorithm>
 #include <iterator>
+class Solution {
+public:
+    int uniquePathsWithObstacles(vector<vector<int>>& obstacleGrid) {
+        if (obstacleGrid[0][0] == 1 || obstacleGrid.back().back() == 1) [[unlikely]] return 0;
+        size_t const ROWS = obstacleGrid.size(), COLS = obstacleGrid[0].size();
+        int *dp = reinterpret_cast<int *>(::alloca((COLS + 1) * sizeof(int)));
+        dp[0] = 0;
+        size_t i = 1;
+        for (; i <= COLS && obstacleGrid[0][i - 1] != 1; ++i) {
+            dp[i] = 1;
+        }
+        std::fill(dp + i, dp + COLS + 1, 0);
+
+        for (size_t i = 1; i < ROWS; ++i) {
+            for (size_t j = 1; j <= COLS; ++j) {
+                if (obstacleGrid[i][j - 1] == 1) {
+                    dp[j] = 0;
+                } else {
+                    dp[j] += dp[j - 1];
+                }
+            }
+        }
+
+        return dp[COLS];
+    }
+};
 /*
  * @lc app=leetcode.cn id=63 lang=cpp
  *

@@ -44,3 +44,77 @@ target_link_libraries(my_lib PUBLIC Boost::filesystem)   # ⬅️ 必须 PUBLIC
   那么 `my_lib` 自己能正常工作，但下游程序（比如 `app` 链接 `my_lib`）在编译自己的代码时，如果包含了 `my_lib` 的头文件（里面用了 `boost::filesystem::path`），就会因为找不到 `Boost::filesystem` 的包含路径或库而失败。
 - **必须用 `PUBLIC`**：
   自身编译时得到链接，下游也能继承链接和包含路径。
+
+# CMake常用命令
+
+CMake中所谓的“函数”，通常指其内置的**命令（Command）**。此外，用户也可以使用 `function()` 命令**自定义函数**来实现代码复用。下面按照功能分类，整理了一些最常用的命令。
+
+## 🧱 核心基础命令
+
+这些是构建任何CMake项目都必备的命令。
+
+*   **`cmake_minimum_required(VERSION <min>)`**：指定项目所需的最低CMake版本。这是CMakeLists.txt文件的第一行，用于确保构建过程的兼容性。
+*   **`project(<PROJECT_NAME> [VERSION] [LANGUAGES])`**：定义项目名称、版本号和使用的编程语言。例如：`project(MyApp VERSION 1.0 LANGUAGES CXX)`。
+*   **`set(<variable> <value>...)`**：设置或创建变量。例如：`set(SOURCES main.cpp utils.cpp)`。
+*   **`message([STATUS|WARNING|...] "message")`**：向终端输出信息，常用于调试。`STATUS`输出普通信息，`FATAL_ERROR`会立即终止CMake进程。
+
+## 📁 文件与路径操作
+
+用于管理源文件、头文件路径和目录结构。
+
+*   **`add_executable(<name> [sources...])`**：使用指定的源文件生成可执行文件。
+*   **`add_library(<name> [STATIC|SHARED] [sources...])`**：生成静态库(`STATIC`)或动态库(`SHARED`)。
+*   **`include_directories(<dirs>...)`**：添加头文件的搜索路径。
+*   **`target_include_directories(<target> <INTERFACE|PUBLIC|PRIVATE> <dirs>...)`**：为目标（`add_executable`或`add_library`创建）指定头文件搜索路径，更具现代性和精确性。
+*   **`aux_source_directory(<dir> <variable>)`**：将指定目录下的所有源文件（如`.cpp`, `.c`）的列表存入一个变量。
+*   **`file(GLOB <variable> <pattern>)`**：通过通配符模式（如`*.cpp`）查找文件并存入变量。**注意**：官方不推荐使用`GLOB`来收集源文件，因为它不会在添加新文件时自动更新。
+*   **`add_subdirectory(<dir>)`**：添加一个子目录，并构建其中的`CMakeLists.txt`。
+*   **`configure_file(<input> <output>)`**：将输入文件（如`config.h.in`）中的变量替换后，生成输出文件。
+
+## 🎯 目标与属性管理
+
+用于精细控制构建目标（可执行文件或库）的属性。
+
+*   **`target_link_libraries(<target> <libs>...)`**：为指定的目标链接库文件。它应在`add_executable`或`add_library`之后调用。
+*   **`link_directories(<dirs>...)`**：添加库文件的搜索路径。现代CMake更推荐使用`find_library`或`find_package`获取库的完整路径。
+*   **`set_target_properties(<target>... PROPERTIES <prop1> <value1>...)`**：为一个或多个目标设置属性。例如，可设置动态库的版本号或输出路径。
+*   **`install(TARGETS <target>... DESTINATION <dir>)`**：定义构建完成后，如何将目标（可执行文件、库等）安装到指定目录。
+
+## 🔀 流程控制与逻辑
+
+实现条件判断和循环。
+
+*   **条件判断 (`if`, `elseif`, `else`, `endif`)**：根据条件执行不同分支。支持数值、字符串、逻辑运算符、存在性检查等丰富表达式。
+    *   `if(DEFINED <var>)`：检查变量是否被定义。
+    *   `if(TARGET <name>)`：检查某个构建目标是否已存在。
+    *   `if(<var> IN_LIST <list>)`：检查某个值是否在列表中。
+*   **循环 (`foreach`, `while`)**：遍历列表或执行重复操作。
+
+## 🔍 查找与依赖管理
+
+用于查找外部库和包。
+
+*   **`find_package(<PackageName> [REQUIRED])`**：查找并加载外部软件包的设置。`REQUIRED`表示该包是必须的，如果找不到则报错。
+*   **`find_library(<var> <lib_name> [HINTS <paths>...])`**：查找一个特定的库文件，并将找到的完整路径存入变量。
+*   **`option(<option_var> "<help_text>" [initial_value])`**：定义一个用户可配置的布尔型选项。用户可通过`-D<option_var>=ON/OFF`在命令行修改。
+
+## 🧩 自定义函数与宏
+
+用于封装重复逻辑，提高代码复用性。
+
+*   **`function(<name> [arg1 ...]) ... endfunction()`**：定义一个函数。函数有**独立的作用域**，内部定义的变量默认是局部的，不会影响外部。
+*   **`macro(<name> [arg1 ...]) ... endmacro()`**：定义一个宏。宏**不创建新的作用域**，它更像是简单的文本替换。
+
+## 🔧 其他实用命令
+
+*   **`add_custom_command` / `add_custom_target`**：添加自定义的构建规则或目标，用于在构建过程中执行外部命令。
+*   **`add_test`**：为`ctest`测试工具添加一个测试用例。
+*   **`list(APPEND|REMOVE|... )`**：对列表变量进行操作。
+*   **`cmake_policy`**：管理CMake的策略，以处理新旧版本之间的行为变化。
+
+💡 **关于“命令”与“函数”**
+在CMake的语境中，`set`, `message`, `add_executable`等被称为**命令（Command）**。而**函数（Function）** 通常指用户通过`function()`自定义的、可复用的代码块。不过，在日常交流中，大家也常常会把“命令”统称为“函数”。
+
+另外想提醒一下，CMake发展很快，现代CMake（3.x以上版本）推荐使用更加精确和模块化的`target_*`系列命令（如`target_include_directories`），而不是全局的`include_directories`，以更好地控制依赖的传递性。
+
+如果想了解某个具体命令的详细用法，随时可以再问我。

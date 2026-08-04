@@ -6,7 +6,31 @@
  */
 // https://quick-bench.com/q/jwXnXqVYzNuSMYYkQ_bgf_qV-34
 // @lc code=start
+int findMaxForm(std::span<std::string const> const strs, int m, int n) {
+	using T = uint32_t;
+	size_t const rows = m + 1, cols = n + 1;
+	size_t const size = rows * cols;
+	size_t const bytes = size * sizeof(T);
 
+	using Extents = std::dextents<size_t, 2>;
+	std::mdspan dp{reinterpret_cast<T *>(::alloca(bytes)), Extents{rows, cols}};
+	std::fill_n(dp.data_handle(), size, 0);
+
+	for (auto const& str : strs) {
+		size_t zeroCount = 0, oneCount = 0;
+		for (char c : str)  c == '0' ? ++zeroCount : ++oneCount;
+
+		for (size_t i = rows; i-- > zeroCount; ) {
+			for (size_t j = cols; j-- > oneCount; ) {
+				if (auto const val = dp[i - zeroCount, j - oneCount] + 1;
+					val > dp[i, j]) {
+					dp[i, j] = val;
+				}
+			}
+		}
+	}
+	return dp[m, n];
+}
 class Solution {
 public:
     int findMaxForm(std::vector<std::string>& strs, int m, int n) {
