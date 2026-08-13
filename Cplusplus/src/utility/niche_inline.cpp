@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <bit>
 #include <cassert>
 #include <cstddef>
@@ -127,19 +128,38 @@ struct __storage_meta
     return all_ref && (__member_count <= (1uz << __tag_bits));
   }();
   static constexpr size_t __tag_mask = __tag_bits ? (1uz << __tag_bits) - 1 : 0;
+
+  // ---- bool niche判定（Rust语义）：恰好1个bool成员 + 其余全空类 ----
+  // bool只借出 {0,1} 两个本征值（不随变体序号移位，值域重叠时无法区分）：
+  //   bool成员 = 0/1（合法bool表示，get可返回真bool&）；第j个空变体 = 2+j；disengaged = 成员数+1
+  // 两个bool变体都占用 {0,1} → 重叠 → 不可niche，回退tag版
+  static constexpr bool __bool_niche_capable = [] consteval noexcept {
+    size_t bool_cnt = 0, empty_cnt = 0;
+    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
+      using member_plain_t = std::remove_cvref_t<__member_type<I>>;
+      if constexpr (std::is_same_v<member_plain_t, bool>) {
+        ++bool_cnt;
+      } else if constexpr (std::is_empty_v<member_plain_t>) {
+        ++empty_cnt;
+      } else {
+        return false;
+      }
+    }
+    // 编码空间：bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256 → 成员数 ≤ 254
+    return bool_cnt == 1 && (2 + empty_cnt + 1 <= 256);
+  }();
 };
 
 // ============ 主模板仅声明，约束特化按 __niche_capable 互斥选择 ============
 template <class T>
 struct __storage_base;
 
-// ---- 通用版：byte数组 + 独立__tag（成员含值类型/普通指针/对齐位不足时回退）----
+// ---- 通用版：byte数组 + 独立__tag（成员含值类型/普通指针/对齐位不足/多bool时回退）----
 template <class T>
-  requires (!__storage_meta<T>::__niche_capable)
+  requires (!__storage_meta<T>::__niche_capable && !__storage_meta<T>::__bool_niche_capable)
 struct __storage_base<T> : __storage_meta<T>
 {
   using __base = __storage_meta<T>;
-  // 别名收编：短名直接使用，避免整页 __storage_meta<T>:: 前缀
   using __tag_type = typename __base::__tag_type;
   static constexpr size_t __member_count = __base::__member_count;
   static constexpr auto __storage_traits = __base::__storage_traits;
@@ -148,8 +168,7 @@ struct __storage_base<T> : __storage_meta<T>
   template <size_t I>
   using __storage_type = typename __base::template __storage_type<I>;
 
-  alignas(__storage_traits.__max_align)
-      std::byte __storage[__storage_traits.__max_size];
+  alignas(__storage_traits.__max_align) std::byte __storage[__storage_traits.__max_size];
   __tag_type __tag { static_cast<__tag_type>(__member_count) };
 
 #pragma region
@@ -194,13 +213,11 @@ struct __storage_base<T> : __storage_meta<T>
                     "construct for a reference member requires exactly one lvalue argument");
       static_assert(!(std::reference_constructs_from_temporary_v<__member_type<I>, Args> && ...),
                     "construct for a reference member would bind to a temporary");
-      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage),
-                        std::addressof(std::forward<Args>(args)...));
+      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage), std::addressof(std::forward<Args>(args)...));
     } else {
       // 值成员（含const/volatile限定）：placement new直接构造，
       // cv限定类型是合法的new目标（如 ::new (p) const int(42)）
-      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage),
-                        std::forward<Args>(args)...);
+      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage), std::forward<Args>(args)...);
     }
     __tag = static_cast<__tag_type>(I);
     return (*this).template get<I>();
@@ -227,7 +244,6 @@ template <class T>
 struct __storage_base<T> : __storage_meta<T>
 {
   using __base = __storage_meta<T>;
-  // 别名收编：短名直接使用，避免整页 __storage_meta<T>:: 前缀
   static constexpr size_t __member_count = __base::__member_count;
   static constexpr size_t __tag_mask = __base::__tag_mask;
   template <size_t I>
@@ -281,7 +297,97 @@ struct __storage_base<T> : __storage_meta<T>
 #pragma endregion
 };
 
+// ---- bool niche版：恰好1个bool成员 + 其余空类，1字节槽，无__tag字段 ----
+// 编码：bool成员 = 0/1（合法bool对象表示，get返回真bool&可写）；第j个空变体 = 2+j；disengaged = 成员数+1
+// bool值域不随变体序号移位（Rust语义）：两个bool变体值域重叠 → 无法niche，回退tag版
+template <class T>
+  requires (__storage_meta<T>::__bool_niche_capable)
+struct __storage_base<T> : __storage_meta<T>
+{
+  using __base = __storage_meta<T>;
+  static constexpr size_t __member_count = __base::__member_count;
+  template <size_t I>
+  using __member_type = typename __base::template __member_type<I>;
+
+  // bool成员索引（判定保证恰好1个）；空变体成员序表（按出现序编号，index()反查用）
+  static constexpr size_t __bool_index = [] consteval noexcept {
+    size_t idx = 0;
+    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
+      if constexpr (std::is_same_v<std::remove_cvref_t<__member_type<I>>, bool>) { idx = I; }
+    }
+    return idx;
+  }();
+  static constexpr auto __empty_members = [] consteval noexcept {
+    std::array<size_t, __member_count> arr{};
+    size_t j = 0;
+    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
+      if constexpr (!std::is_same_v<std::remove_cvref_t<__member_type<I>>, bool>) { arr[j++] = I; }
+    }
+    return arr;
+  }();
+  static constexpr unsigned char __disengaged = static_cast<unsigned char>(__member_count + 1);
+
+  // unsigned char直接读写：bool成员engaged时经construct_at创建bool对象（字节恒0/1，永不触碰bool值域规则）
+  unsigned char __slot = __disengaged;
+
+#pragma region
+  constexpr std::size_t index() const noexcept {
+    // 0/1 → bool变体；2..k → 空变体（第s-2个）；k+1 → disengaged（== member_count）
+    if (__slot <= 1) { return __bool_index; }
+    if (__slot <= __member_count) { return __empty_members[__slot - 2]; }
+    return __member_count;
+  }
+
+  constexpr bool has_value() const noexcept {
+    return __slot != __disengaged;
+  }
+
+  template <size_t I>
+  constexpr decltype(auto) get(this auto &&self) noexcept {
+    static_assert(I < __member_count, "Index out of range");
+    assert(self.index() == I && "get: member is not the active one");
+    if constexpr (I == __bool_index) {
+      // 字节0/1是合法bool对象（construct_at创建），返回真引用可写；const不穿透存储对象
+      using self_t = std::remove_reference_t<decltype(self)>;
+      using bool_ptr_t = std::conditional_t<std::is_const_v<self_t>, const bool *, bool *>;
+      return std::forward_like<decltype(self)>(*reinterpret_cast<bool_ptr_t>(&self.__slot));
+    } else {
+      // 空类成员无对象可引用：按值返回（无状态，读写无意义；同Rust unit变体）
+      return std::remove_cvref_t<__member_type<I>>{};
+    }
+  }
+
+  template <size_t I, class... Args>
+  constexpr decltype(auto) construct(Args&&...args) noexcept {
+    static_assert(I < __member_count, "Index out of range");
+    assert(!has_value() && "construct: storage already engaged");
+    if constexpr (I == __bool_index) {
+      std::construct_at(reinterpret_cast<bool *>(&__slot), std::forward<Args>(args)...);
+    } else {
+      // 空变体（Rust unit语义）：无对象，直接写编码字节
+      static_assert(sizeof...(Args) == 0,
+                    "construct for an empty member requires no arguments");
+      size_t j = 0;
+      while (__empty_members[j] != I) { ++j; }
+      __slot = static_cast<unsigned char>(2 + j);
+    }
+    return (*this).template get<I>();
+  }
+
+  template <size_t I>
+  constexpr void destroy() noexcept {
+    static_assert(I < __member_count, "Index out of range");
+    assert(index() == I && "destroy: member is not the active one");
+    if constexpr (I == __bool_index) {
+      std::destroy_at(reinterpret_cast<bool *>(&__slot));       // bool平凡析构，仅结束生命周期
+    }
+    __slot = __disengaged;
+  }
+#pragma endregion
+};
+
 } // namespace std
+
 
 #include <cassert>
 #include <cstdio>
@@ -293,12 +399,24 @@ struct Ref3   { int& a; std::string& b; double& c; }; // 3引用：2位对齐位
 struct NoNiche { int& a; char& b; };                  // char对齐1，无位可借 → tag回退
 struct Mixed  { int x; std::string& s; };             // 含值成员 → tag回退
 
+// ---- bool niche（Rust语义）：恰好1个bool + 其余空类 ----
+struct Bool1  { bool a; };                              // 单bool：可niche（optional<bool>）
+struct Bool2  { bool a; struct None {} none; };         // bool+空类：可niche
+struct Bool3  { bool a; struct None {} none; struct Empty {} e; }; // bool+2空类：可niche
+struct BoolFail { bool a; bool b; };                    // 双bool：值域重叠 → tag回退
+
 // ---- 编译期判定 ----
 static_assert(std::__storage_meta<Ref2>::__niche_capable);
 static_assert(std::__storage_meta<Ref1>::__niche_capable);
 static_assert(std::__storage_meta<Ref3>::__niche_capable);
 static_assert(!std::__storage_meta<NoNiche>::__niche_capable);
 static_assert(!std::__storage_meta<Mixed>::__niche_capable);
+
+static_assert(std::__storage_meta<Bool1>::__bool_niche_capable);
+static_assert(std::__storage_meta<Bool2>::__bool_niche_capable);
+static_assert(std::__storage_meta<Bool3>::__bool_niche_capable);
+static_assert(!std::__storage_meta<BoolFail>::__bool_niche_capable);
+static_assert(!std::__storage_meta<BoolFail>::__niche_capable);
 
 // ---- 尺寸：niche版恒8字节（无tag字段），tag版按现状 ----
 static_assert(sizeof(std::__storage_base<Ref2>) == 8);   // 旧方案16 → 省8
@@ -307,10 +425,21 @@ static_assert(sizeof(std::__storage_base<Ref3>) == 8);
 static_assert(sizeof(std::__storage_base<NoNiche>) == 16);
 static_assert(sizeof(std::__storage_base<Mixed>) == 16); // string& 适配为指针8 + tag 1 → 对齐8
 
+// ---- 尺寸：bool niche恒1字节（tag版2字节） ----
+static_assert(sizeof(std::__storage_base<Bool1>) == 1);
+static_assert(sizeof(std::__storage_base<Bool2>) == 1);
+static_assert(sizeof(std::__storage_base<Bool3>) == 1);
+static_assert(sizeof(std::__storage_base<BoolFail>) == 2); // tag版：byte[1] + tag[1]
+
 // ---- 返回类型：引用成员const不穿透 ----
 static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get<0>()), int&>);
 static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get<1>()), std::string&>);
 static_assert(std::is_same_v<decltype(std::declval<const std::__storage_base<Ref2>&>().get<1>()), std::string&>);
+
+// ---- 返回类型：bool成员→真bool&（const对象→const bool&）；空类成员→按值 ----
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Bool2>&>().get<0>()), bool&>);
+static_assert(std::is_same_v<decltype(std::declval<const std::__storage_base<Bool2>&>().get<0>()), const bool&>);
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Bool2>&>().get<1>()), Bool2::None>);
 
 int main() {
   int x = 1;
@@ -370,6 +499,57 @@ int main() {
     std::string s2 = "world";
     r.construct<1>(s2);
     assert(r.index() == 1 && r.get<1>() == "world");
+    r.destroy<1>();
+    assert(r.index() == 2);
+  }
+
+  { // bool niche：bool + 空类
+    std::__storage_base<Bool2> r;
+    assert(!r.has_value() && r.index() == 2);
+    r.construct<0>(true);
+    assert(r.has_value() && r.index() == 0);
+    assert(r.get<0>() == true);
+    r.get<0>() = false;                        // bool& 可写，编码不破坏
+    assert(r.get<0>() == false);
+    const auto& cr = r;
+    assert(cr.get<0>() == false);              // const对象 → const bool&
+    r.destroy<0>();
+    assert(!r.has_value() && r.index() == 2);
+
+    r.construct<1>();                          // 空变体：无参（unit语义）
+    assert(r.has_value() && r.index() == 1);
+    [[maybe_unused]] Bool2::None n = r.get<1>(); // 按值返回
+    r.destroy<1>();
+    assert(!r.has_value() && r.index() == 2);
+  }
+
+  { // bool + 2空类：空变体编码 2/3、index()反查
+    std::__storage_base<Bool3> r;
+    r.construct<2>();
+    assert(r.index() == 2);
+    r.destroy<2>();
+    r.construct<1>();
+    assert(r.index() == 1);
+    r.destroy<1>();
+    r.construct<0>(true);
+    assert(r.index() == 0 && r.get<0>());
+    r.destroy<0>();
+    assert(r.index() == 3);
+  }
+
+  { // 单bool：optional<bool> 语义，1字节
+    std::__storage_base<Bool1> r;
+    assert(!r.has_value() && r.index() == 1);
+    r.construct<0>(false);
+    assert(r.index() == 0 && r.get<0>() == false);
+    r.destroy<0>();
+    assert(!r.has_value() && r.index() == 1);
+  }
+
+  { // 双bool：值域重叠 → tag版回退
+    std::__storage_base<BoolFail> r;
+    r.construct<1>(true);
+    assert(r.index() == 1 && r.get<1>() == true);
     r.destroy<1>();
     assert(r.index() == 2);
   }
