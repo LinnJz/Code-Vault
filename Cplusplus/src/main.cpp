@@ -10,7 +10,3 @@
     }
     pthread_attr_destroy(&attr);
 */
-#    include <immintrin.h>
-int main() {
-  return 0;
-}

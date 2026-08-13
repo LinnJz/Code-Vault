@@ -439,7 +439,13 @@ private:
   template<class E, E CrItMaGiC>
   static DEBUG_STRING_VIEW debug_enum_value_name()
   {
-    DEBUG_STRING_VIEW name    = __PRETTY_FUNCTION__;
+    DEBUG_STRING_VIEW name =
+#      ifdef _MSC_VER
+        __FUNCSIG__;
+#      else
+        __PRETTY_FUNCTION__;
+#      endif // _MSC_VER
+
     auto              critpos = name.find("CrItMaGiC = ") + 12;
     auto              endpos  = name.find_first_of(";]");
     auto              slice   = name.substr(critpos, endpos - critpos);

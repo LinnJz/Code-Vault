@@ -118,3 +118,24 @@ CMake中所谓的“函数”，通常指其内置的**命令（Command）**。�
 另外想提醒一下，CMake发展很快，现代CMake（3.x以上版本）推荐使用更加精确和模块化的`target_*`系列命令（如`target_include_directories`），而不是全局的`include_directories`，以更好地控制依赖的传递性。
 
 如果想了解某个具体命令的详细用法，随时可以再问我。
+
+## 配套分发
+
+```
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
+```
+
+* `GNUInstallDirs`：引入标准安装目录变量，符合GNU惯例，避免硬编码，提升可移植性
+* `CMakePackageConfigHelpers`：生成包配置文件，支持外部项目find_package(项目)引用
+
+## 构建设置
+
+```cmake
+set(CMAKE_CONFIGURATION_TYPES "Debug;Release;RelWithDebInfo;MinSizeRel" CACHE STRING "" FORCE)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the type of build" FORCE) # 默认debug
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo" "MinSizeRel") #为“CMake图形界面工具（cmake-gui / ccmake）”和“支持CMake集成的现代IDE设置面板”设计的，当你使用 cmake-gui 或 ccmake 时，输入框会变成下拉菜单，限定你只能选这4个值，防止手误输错
+endif()
+```
+
