@@ -62,92 +62,86 @@ struct __storage_meta
       >
   >;
 
-  static constexpr auto __storage_traits = [] consteval noexcept {
-    struct storage_traits {
+  // ---- 一次template for求全部元数据：避免多次展开循环，加快编译 ----
+  static constexpr auto __metadata = [] consteval noexcept {
+    struct metadata {
       size_t __max_size = 0;
       size_t __max_align = 1;
-    } traits;
-    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      if (traits.__max_size < sizeof(__storage_type<I>)) {
-        traits.__max_size = sizeof(__storage_type<I>);
-      }
-      if (traits.__max_align < alignof(__storage_type<I>)) { 
-        traits.__max_align = alignof(__storage_type<I>);
-      }
-    }
-    // 空类：零长度数组不合法，退化为1字节
-    return (traits.__max_size = traits.__max_size ? traits.__max_size : 1, traits);
-  }();
-
-  static constexpr auto __nothrow_traits = [] consteval noexcept {
-    struct nothrow_traits {
       bool __is_all_mems_copy_assignment_nothrow = true;
       bool __is_all_mems_copy_constructor_nothrow = true;
       bool __is_all_mems_move_assignment_nothrow = true;
       bool __is_all_mems_move_constructor_nothrow = true;
       bool __is_all_mems_default_constructor_nothrow = true;
       bool __is_all_mems_equality_comparison_nothrow = true;
-    } traits;
+      size_t __tag_bits = std::numeric_limits<size_t>::digits; // 引用niche借用位数
+      bool __all_ref = true;                                   // 引用niche：全引用
+      size_t __bool_cnt = 0;                                   // bool niche：bool成员数
+      size_t __empty_cnt = 0;                                  // bool niche：空类成员数
+      size_t __bool_index = 0;                                 // bool niche：bool成员索引
+      std::array<size_t, __member_count> __empty_members{};    // bool niche：空变体成员序表
+    } m;
     template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      using storage_t = __storage_type<I>;            // 引用成员的操作实为指针拷贝，恒不抛
-      using member_plain_t = std::remove_cvref_t<__member_type<I>>; // 比较语义作用于被引用对象
-      traits.__is_all_mems_move_constructor_nothrow &= 
-          std::is_nothrow_move_constructible_v<storage_t>;
-      traits.__is_all_mems_default_constructor_nothrow &= 
-          std::is_nothrow_default_constructible_v<storage_t>;
-      traits.__is_all_mems_copy_constructor_nothrow &= 
-          std::is_nothrow_copy_constructible_v<storage_t>;
-      traits.__is_all_mems_copy_assignment_nothrow &= 
-          std::is_nothrow_copy_assignable_v<storage_t>;
-      traits.__is_all_mems_move_assignment_nothrow &= 
-          std::is_nothrow_move_assignable_v<storage_t>;
-      traits.__is_all_mems_equality_comparison_nothrow &= 
-          std::equality_comparable<member_plain_t> && 
+      using storage_t = __storage_type<I>;        // 引用成员适配后为指针
+      using member_t = __member_type<I>;
+      using member_plain_t = std::remove_cvref_t<member_t>;
+      // 存储尺寸/对齐
+      if (m.__max_size < sizeof(storage_t)) { m.__max_size = sizeof(storage_t); }
+      if (m.__max_align < alignof(storage_t)) { m.__max_align = alignof(storage_t); }
+      // nothrow traits：引用成员的操作实为指针拷贝，恒不抛；比较语义作用于被引用对象
+      m.__is_all_mems_move_constructor_nothrow &= std::is_nothrow_move_constructible_v<storage_t>;
+      m.__is_all_mems_default_constructor_nothrow &= std::is_nothrow_default_constructible_v<storage_t>;
+      m.__is_all_mems_copy_constructor_nothrow &= std::is_nothrow_copy_constructible_v<storage_t>;
+      m.__is_all_mems_copy_assignment_nothrow &= std::is_nothrow_copy_assignable_v<storage_t>;
+      m.__is_all_mems_move_assignment_nothrow &= std::is_nothrow_move_assignable_v<storage_t>;
+      m.__is_all_mems_equality_comparison_nothrow &=
+          std::equality_comparable<member_plain_t> &&
           requires(const member_plain_t& __lhs, const member_plain_t& __rhs) { { __lhs == __rhs } noexcept; };
-    }
-    return traits;
-  }();
-
-  // ---- niche 判定：全部引用成员（适配后指针强制非空 → null 腾出）&& 对齐位容量足够 ----
-  // 编码：存储值 = 真实地址 | 变体编号I；disengaged = 0
-  // 借用位数 = min_i(log2(alignof(T_i)))，要求 2^bits >= 成员数（单成员时 bits=0 亦可）
-  static constexpr size_t __tag_bits = [] consteval noexcept {
-    size_t bits = std::numeric_limits<size_t>::digits;
-    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      // 对象地址必被其alignof整除（alignof为2的幂），低log2(alignof)位恒为0
-      bits = std::min<size_t>(bits, static_cast<size_t>(std::countr_zero(
-          alignof(std::remove_reference_t<__member_type<I>>))));
-    }
-    return bits;
-  }();
-  static constexpr bool __niche_capable = [] consteval noexcept {
-    bool all_ref = true;
-    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      all_ref = all_ref && std::is_reference_v<__member_type<I>>;
-    }
-    return all_ref && (__member_count <= (1uz << __tag_bits));
-  }();
-  static constexpr size_t __tag_mask = __tag_bits ? (1uz << __tag_bits) - 1 : 0;
-
-  // ---- bool niche判定（Rust语义）：恰好1个bool成员 + 其余全空类 ----
-  // bool只借出 {0,1} 两个本征值（不随变体序号移位，值域重叠时无法区分）：
-  //   bool成员 = 0/1（合法bool表示，get可返回真bool&）；第j个空变体 = 2+j；disengaged = 成员数+1
-  // 两个bool变体都占用 {0,1} → 重叠 → 不可niche，回退tag版
-  static constexpr bool __bool_niche_capable = [] consteval noexcept {
-    size_t bool_cnt = 0, empty_cnt = 0;
-    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      using member_plain_t = std::remove_cvref_t<__member_type<I>>;
+      // 引用niche：地址必被alignof整除（alignof为2的幂），低log2(alignof)位恒为0
+      m.__tag_bits = std::min<size_t>(m.__tag_bits, static_cast<size_t>(std::countr_zero(
+          alignof(std::remove_reference_t<member_t>))));
+      m.__all_ref = m.__all_ref && std::is_reference_v<member_t>;
+      // bool niche（Rust语义）：bool只借出{0,1}本征值，值域重叠时无法区分
       if constexpr (std::is_same_v<member_plain_t, bool>) {
-        ++bool_cnt;
+        ++m.__bool_cnt;
+        m.__bool_index = I;
       } else if constexpr (std::is_empty_v<member_plain_t>) {
-        ++empty_cnt;
-      } else {
-        return false;
+        m.__empty_members[m.__empty_cnt++] = I;
       }
     }
-    // 编码空间：bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256 → 成员数 ≤ 254
-    return bool_cnt == 1 && (2 + empty_cnt + 1 <= 256);
+    // 空类：零长度数组不合法，退化为1字节
+    m.__max_size = m.__max_size ? m.__max_size : 1;
+    return m;
   }();
+
+  // ---- 派生元数据（无template for，直接取自__metadata）----
+  static constexpr auto __storage_traits = [] consteval noexcept {
+    struct storage_traits { size_t __max_size; size_t __max_align; };
+    return storage_traits{__metadata.__max_size, __metadata.__max_align};
+  }();
+  static constexpr auto __nothrow_traits = [] consteval noexcept {
+    struct nothrow_traits {
+      bool __is_all_mems_copy_assignment_nothrow;
+      bool __is_all_mems_copy_constructor_nothrow;
+      bool __is_all_mems_move_assignment_nothrow;
+      bool __is_all_mems_move_constructor_nothrow;
+      bool __is_all_mems_default_constructor_nothrow;
+      bool __is_all_mems_equality_comparison_nothrow;
+    };
+    return nothrow_traits{__metadata.__is_all_mems_copy_assignment_nothrow,
+                          __metadata.__is_all_mems_copy_constructor_nothrow,
+                          __metadata.__is_all_mems_move_assignment_nothrow,
+                          __metadata.__is_all_mems_move_constructor_nothrow,
+                          __metadata.__is_all_mems_default_constructor_nothrow,
+                          __metadata.__is_all_mems_equality_comparison_nothrow};
+  }();
+  static constexpr size_t __tag_bits = __metadata.__tag_bits;
+  static constexpr size_t __tag_mask = __tag_bits ? (1uz << __tag_bits) - 1 : 0;
+  // 引用niche：全部引用成员（适配后指针强制非空 → null腾出）&& 对齐位容量足够（单成员bits=0亦可）
+  static constexpr bool __niche_capable =
+      __metadata.__all_ref && (__member_count <= (1uz << __tag_bits));
+  // bool niche：恰好1个bool成员 + 其余空类；编码空间 bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256
+  static constexpr bool __bool_niche_capable =
+      __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256);
 };
 
 // ============ 主模板仅声明，约束特化按 __niche_capable 互斥选择 ============
@@ -309,22 +303,10 @@ struct __storage_base<T> : __storage_meta<T>
   template <size_t I>
   using __member_type = typename __base::template __member_type<I>;
 
-  // bool成员索引（判定保证恰好1个）；空变体成员序表（按出现序编号，index()反查用）
-  static constexpr size_t __bool_index = [] consteval noexcept {
-    size_t idx = 0;
-    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      if constexpr (std::is_same_v<std::remove_cvref_t<__member_type<I>>, bool>) { idx = I; }
-    }
-    return idx;
-  }();
-  static constexpr auto __empty_members = [] consteval noexcept {
-    std::array<size_t, __member_count> arr{};
-    size_t j = 0;
-    template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
-      if constexpr (!std::is_same_v<std::remove_cvref_t<__member_type<I>>, bool>) { arr[j++] = I; }
-    }
-    return arr;
-  }();
+  // bool成员索引（判定保证恰好1个）与空变体成员序表（按出现序编号，index()反查用）
+  // 均直接取自基类一次template for求得的__metadata，不再重复展开循环
+  static constexpr size_t __bool_index = __base::__metadata.__bool_index;
+  static constexpr auto __empty_members = __base::__metadata.__empty_members;
   static constexpr unsigned char __disengaged = static_cast<unsigned char>(__member_count + 1);
 
   // unsigned char直接读写：bool成员engaged时经construct_at创建bool对象（字节恒0/1，永不触碰bool值域规则）
