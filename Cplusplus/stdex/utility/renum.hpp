@@ -9,6 +9,7 @@
 #include <memory>
 #include <meta>
 #include <ranges>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -148,6 +149,39 @@ struct __storage_meta
   // bool niche：恰好1个bool成员 + 其余空类；编码空间 bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256
   static constexpr bool __bool_niche_capable =
       __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256) && __niche_opt_in;
+      
+  constexpr size_t size() const noexcept {
+    return __member_count;
+  }
+
+  // 按类型查找唯一成员索引（get<U>用）：[cvref]U经remove_cvref与tuple成员比较；
+  // 无匹配或匹配多个返回__member_count哨兵。标准元编程：反射成员类型转为
+  // std::tuple<...>类型容器（仅声明取类型，不定义变量），fold表达式判定。
+  template <size_t... Is>
+  static auto __member_tuple_impl(std::index_sequence<Is...>) -> std::tuple<__member_type<Is>...>;
+  using __member_tuple_t = decltype(__member_tuple_impl(std::make_index_sequence<__member_count>{}));
+
+  template <class U, class Tuple>
+  struct __index_of_impl;
+
+  template <class U, class... Ts>
+  struct __index_of_impl<U, std::tuple<Ts...>> {
+    // 精确匹配：U须与某个成员类型完全相等（含cvref），如 int&→int&成员、int→int值成员、const int&→const int&成员
+    static constexpr size_t __count =
+        (size_t{std::is_same_v<U, Ts>} + ...);
+    template <size_t... Is>
+    static constexpr size_t __find(std::index_sequence<Is...>) noexcept {
+      size_t idx = __member_count;
+      ((std::is_same_v<U, Ts> ? (idx = Is) : 0), ...);
+      return idx;
+    }
+    static constexpr size_t __value = __count == 1
+        ? __find(std::make_index_sequence<sizeof...(Ts)>{})
+        : __member_count;
+  };
+
+  template <class U>
+  static constexpr size_t __index_of = __index_of_impl<U, __member_tuple_t>::__value;
 };
 
 // ============ 主模板仅声明，约束特化按 __niche_capable 互斥选择 ============
@@ -198,6 +232,14 @@ struct __storage_base<T> : __storage_meta<T>
       using member_ptr_t = std::conditional_t<std::is_const_v<self_t>, member_plain_t const *, member_plain_t *>;
       return std::forward_like<decltype(self)>(*reinterpret_cast<member_ptr_t>(self.__storage));
     }
+  }
+
+  // 按类型取（仿variant::get<T>，转发按索引get）；U须唯一匹配一个成员（remove_cvref比较）
+  template <class U>
+  constexpr decltype(auto) get(this auto &&self) noexcept {
+    static_assert(__base::template __index_of<U> != __member_count,
+                  "get<U>: U must match exactly one member type");
+    return self.template get<__base::template __index_of<U>>();
   }
 
   template <size_t I, class... Args>
@@ -273,6 +315,14 @@ struct __storage_base<T> : __storage_meta<T>
     return *static_cast<std::remove_reference_t<__member_type<I>> *>(addr);
   }
 
+  // 按类型取（仿variant::get<T>，转发按索引get）；U须唯一匹配一个成员（remove_cvref比较）
+  template <class U>
+  constexpr decltype(auto) get(this auto &&self) noexcept {
+    static_assert(__base::template __index_of<U> != __member_count,
+                  "get<U>: U must match exactly one member type");
+    return self.template get<__base::template __index_of<U>>();
+  }
+
   template <size_t I, class... Args>
   constexpr decltype(auto) construct(Args&&...args) noexcept {
     static_assert(I < __member_count, "Index out of range");
@@ -346,6 +396,14 @@ struct __storage_base<T> : __storage_meta<T>
     }
   }
 
+  // 按类型取（仿variant::get<T>，转发按索引get）；U须唯一匹配一个成员（remove_cvref比较）
+  template <class U>
+  constexpr decltype(auto) get(this auto &&self) noexcept {
+    static_assert(__base::template __index_of<U> != __member_count,
+                  "get<U>: U must match exactly one member type");
+    return self.template get<__base::template __index_of<U>>();
+  }
+
   template <size_t I, class... Args>
   constexpr decltype(auto) construct(Args&&...args) noexcept {
     static_assert(I < __member_count, "Index out of range");
@@ -371,6 +429,7 @@ struct __storage_base<T> : __storage_meta<T>
     __slot = __disengaged;
   }
 #pragma endregion
+
 };
 
 } // namespace std
