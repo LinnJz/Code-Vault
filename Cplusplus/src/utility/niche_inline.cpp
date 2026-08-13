@@ -139,6 +139,7 @@ template <class T>
 struct __storage_base<T> : __storage_meta<T>
 {
   using __base = __storage_meta<T>;
+  // 别名收编：短名直接使用，避免整页 __storage_meta<T>:: 前缀
   using __tag_type = typename __base::__tag_type;
   static constexpr size_t __member_count = __base::__member_count;
   static constexpr auto __storage_traits = __base::__storage_traits;
@@ -147,7 +148,8 @@ struct __storage_base<T> : __storage_meta<T>
   template <size_t I>
   using __storage_type = typename __base::template __storage_type<I>;
 
-  alignas(__storage_traits.__max_align) std::byte __storage[__storage_traits.__max_size];
+  alignas(__storage_traits.__max_align)
+      std::byte __storage[__storage_traits.__max_size];
   __tag_type __tag { static_cast<__tag_type>(__member_count) };
 
 #pragma region
@@ -192,11 +194,13 @@ struct __storage_base<T> : __storage_meta<T>
                     "construct for a reference member requires exactly one lvalue argument");
       static_assert(!(std::reference_constructs_from_temporary_v<__member_type<I>, Args> && ...),
                     "construct for a reference member would bind to a temporary");
-      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage), std::addressof(std::forward<Args>(args)...));
+      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage),
+                        std::addressof(std::forward<Args>(args)...));
     } else {
       // 值成员（含const/volatile限定）：placement new直接构造，
       // cv限定类型是合法的new目标（如 ::new (p) const int(42)）
-      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage), std::forward<Args>(args)...);
+      std::construct_at(reinterpret_cast<__storage_type<I> *>(__storage),
+                        std::forward<Args>(args)...);
     }
     __tag = static_cast<__tag_type>(I);
     return (*this).template get<I>();
@@ -223,6 +227,7 @@ template <class T>
 struct __storage_base<T> : __storage_meta<T>
 {
   using __base = __storage_meta<T>;
+  // 别名收编：短名直接使用，避免整页 __storage_meta<T>:: 前缀
   static constexpr size_t __member_count = __base::__member_count;
   static constexpr size_t __tag_mask = __base::__tag_mask;
   template <size_t I>
@@ -277,3 +282,99 @@ struct __storage_base<T> : __storage_meta<T>
 };
 
 } // namespace std
+
+#include <cassert>
+#include <cstdio>
+#include <string>
+
+struct Ref2   { int& a; std::string& b; };            // 全引用：可niche
+struct Ref1   { int& a; };                            // 单引用：可niche
+struct Ref3   { int& a; std::string& b; double& c; }; // 3引用：2位对齐位足够
+struct NoNiche { int& a; char& b; };                  // char对齐1，无位可借 → tag回退
+struct Mixed  { int x; std::string& s; };             // 含值成员 → tag回退
+
+// ---- 编译期判定 ----
+static_assert(std::__storage_meta<Ref2>::__niche_capable);
+static_assert(std::__storage_meta<Ref1>::__niche_capable);
+static_assert(std::__storage_meta<Ref3>::__niche_capable);
+static_assert(!std::__storage_meta<NoNiche>::__niche_capable);
+static_assert(!std::__storage_meta<Mixed>::__niche_capable);
+
+// ---- 尺寸：niche版恒8字节（无tag字段），tag版按现状 ----
+static_assert(sizeof(std::__storage_base<Ref2>) == 8);   // 旧方案16 → 省8
+static_assert(sizeof(std::__storage_base<Ref1>) == 8);
+static_assert(sizeof(std::__storage_base<Ref3>) == 8);
+static_assert(sizeof(std::__storage_base<NoNiche>) == 16);
+static_assert(sizeof(std::__storage_base<Mixed>) == 16); // string& 适配为指针8 + tag 1 → 对齐8
+
+// ---- 返回类型：引用成员const不穿透 ----
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get<0>()), int&>);
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get<1>()), std::string&>);
+static_assert(std::is_same_v<decltype(std::declval<const std::__storage_base<Ref2>&>().get<1>()), std::string&>);
+
+int main() {
+  int x = 1;
+  std::string s = "hello";
+
+  { // 双引用 niche
+    std::__storage_base<Ref2> r;
+    assert(!r.has_value());
+    r.construct<0>(x);
+    assert(r.has_value() && r.index() == 0);
+    r.get<0>() = 2;
+    assert(x == 2);                                // 引用绑定生效
+    r.destroy<0>();
+    assert(!r.has_value() && r.index() == 2);      // disengaged index == member_count
+
+    r.construct<1>(s);
+    assert(r.index() == 1);
+    r.get<1>() += "!";
+    assert(s == "hello!");                         // 修改透过引用
+    const auto& cr = r;
+    assert(cr.get<1>() == "hello!");               // const对象get：const不穿透
+    r.destroy<1>();
+    assert(!r.has_value());
+  }
+
+  { // 单引用 niche（mask=0 退化路径）
+    std::__storage_base<Ref1> r;
+    r.construct<0>(x);
+    assert(r.index() == 0 && r.get<0>() == 2);
+    r.destroy<0>();
+    assert(r.index() == 1);
+  }
+
+  { // 三引用 niche
+    double d = 3.14;
+    std::__storage_base<Ref3> r;
+    r.construct<2>(d);
+    assert(r.index() == 2 && r.get<2>() == 3.14);
+    r.destroy<2>();
+    assert(r.index() == 3);
+  }
+
+  { // 对齐不足 → tag版回退（引用分支仍正常）
+    char c = 'z';
+    std::__storage_base<NoNiche> r;
+    r.construct<1>(c);
+    assert(r.index() == 1 && r.get<1>() == 'z');
+    r.destroy<1>();
+    assert(r.index() == 2);
+  }
+
+  { // 含值成员 → tag版回退
+    std::__storage_base<Mixed> r;
+    r.construct<0>(42);
+    assert(r.index() == 0 && r.get<0>() == 42);
+    r.destroy<0>();
+    std::string s2 = "world";
+    r.construct<1>(s2);
+    assert(r.index() == 1 && r.get<1>() == "world");
+    r.destroy<1>();
+    assert(r.index() == 2);
+  }
+
+  std::puts("ALL PASS");
+}
+
+
