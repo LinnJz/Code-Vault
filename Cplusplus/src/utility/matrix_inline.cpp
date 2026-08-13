@@ -172,3 +172,157 @@ struct __storage_base
 };
 
 } // namespace std
+
+
+#include <string>
+#include <type_traits>
+
+struct Widget {          // 非平凡析构
+  int tag = 0;
+  ~Widget() { tag = -1; }
+};
+
+struct All {             // POD=int，非POD=std::string
+  int m0;
+  volatile int m1;
+  const int m2;
+  volatile const int m3;
+  int& m4;
+  int&& m5;
+  const int& m6;
+  int* m7;
+  std::string m8;
+  volatile std::string m9;
+  const std::string m10;
+  volatile const std::string m11;
+  std::string& m12;
+  std::string&& m13;
+  const std::string& m14;
+  std::string* m15;
+};
+
+struct AllW {            // 自定义非平凡类型
+  Widget w0;
+  Widget& w1;
+  Widget* w2;
+};
+
+template <class T>
+struct R : std::__storage_base<T> {};
+
+int main() {
+  R<All> rs;
+  int iv = 1;
+  int iv2 = 2;
+  std::string sv = "sv";
+  std::string sv2 = "sv2";
+
+  rs.construct<0>(42);            // int
+  static_assert(std::is_same_v<decltype(rs.get<0>()), int&>);
+  rs.get<0>() = 43;
+  rs.destroy<0>();
+
+  rs.construct<1>(7);             // volatile int
+  static_assert(std::is_same_v<decltype(rs.get<1>()), volatile int&>);
+  rs.destroy<1>();
+
+  rs.construct<2>(8);             // const int
+  static_assert(std::is_same_v<decltype(rs.get<2>()), const int&>);
+  rs.destroy<2>();
+
+  rs.construct<3>(9);             // volatile const int
+  static_assert(std::is_same_v<decltype(rs.get<3>()), const volatile int&>);
+  rs.destroy<3>();
+
+  rs.construct<4>(iv);            // int&
+  static_assert(std::is_same_v<decltype(rs.get<4>()), int&>);
+  rs.get<4>() = 99;
+  rs.destroy<4>();
+  assert(iv == 99);
+
+  rs.construct<5>(iv2);           // int&& 按左值绑定存指针
+  static_assert(std::is_same_v<decltype(rs.get<5>()), int&>);
+  rs.destroy<5>();
+
+  rs.construct<6>(iv);            // const int&
+  static_assert(std::is_same_v<decltype(rs.get<6>()), const int&>);
+  rs.destroy<6>();
+
+  rs.construct<7>(&iv);           // int*
+  static_assert(std::is_same_v<decltype(rs.get<7>()), int*&>);
+  *rs.get<7>() = 100;
+  rs.destroy<7>();
+  assert(iv == 100);
+
+  rs.construct<8>(std::string("a"));   // string
+  static_assert(std::is_same_v<decltype(rs.get<8>()), std::string&>);
+  rs.get<8>() += "b";
+  rs.destroy<8>();
+
+  rs.construct<9>(std::string("v"));   // volatile string
+  static_assert(std::is_same_v<decltype(rs.get<9>()), volatile std::string&>);
+  rs.destroy<9>();
+
+  rs.construct<10>(std::string("c"));  // const string
+  static_assert(std::is_same_v<decltype(rs.get<10>()), const std::string&>);
+  rs.destroy<10>();
+
+  rs.construct<11>(std::string("vc")); // volatile const string
+  static_assert(std::is_same_v<decltype(rs.get<11>()), const volatile std::string&>);
+  rs.destroy<11>();
+
+  rs.construct<12>(sv);            // string&
+  static_assert(std::is_same_v<decltype(rs.get<12>()), std::string&>);
+  rs.get<12>() += "x";
+  rs.destroy<12>();
+  assert(sv == "svx");
+
+  rs.construct<13>(sv2);           // string&& 按左值绑定
+  static_assert(std::is_same_v<decltype(rs.get<13>()), std::string&>);
+  rs.destroy<13>();
+
+  rs.construct<14>(sv);            // const string&
+  static_assert(std::is_same_v<decltype(rs.get<14>()), const std::string&>);
+  rs.destroy<14>();
+
+  rs.construct<15>(&sv);           // string*
+  static_assert(std::is_same_v<decltype(rs.get<15>()), std::string*&>);
+  rs.get<15>()->append("y");
+  rs.destroy<15>();
+  assert(sv == "svxy");
+
+  rs.construct<0>(1);              // const 对象访问
+  R<All> const& crs = rs;
+  static_assert(std::is_same_v<decltype(crs.get<0>()), const int&>);
+  static_assert(std::is_same_v<decltype(crs.get<1>()), const volatile int&>);
+  static_assert(std::is_same_v<decltype(crs.get<4>()), int&>);        // 引用成员不穿透const
+  static_assert(std::is_same_v<decltype(crs.get<5>()), int&>);
+  static_assert(std::is_same_v<decltype(crs.get<6>()), const int&>);
+  static_assert(std::is_same_v<decltype(crs.get<7>()), int* const&>);
+  static_assert(std::is_same_v<decltype(crs.get<8>()), const std::string&>);
+  static_assert(std::is_same_v<decltype(crs.get<12>()), std::string&>);
+  static_assert(std::is_same_v<decltype(crs.get<14>()), const std::string&>);
+  rs.destroy<0>();
+
+  static_assert(std::is_same_v<decltype(std::move(rs).get<0>()), int&&>);
+  static_assert(std::is_same_v<decltype(std::move(rs).get<4>()), int&>);  // 引用成员不forward_like
+  static_assert(std::is_same_v<decltype(std::move(rs).get<8>()), std::string&&>);
+
+  // 自定义非平凡析构类型
+  R<AllW> rw;
+  Widget wt;
+  wt.tag = 7;
+  rw.construct<0>(Widget{});
+  rw.destroy<0>();                 // 显式析构被调用
+  rw.construct<1>(wt);             // Widget&
+  static_assert(std::is_same_v<decltype(rw.get<1>()), Widget&>);
+  rw.get<1>().tag = 8;             // 通过引用修改原对象
+  rw.destroy<1>();
+  assert(wt.tag == 8);
+  rw.construct<2>(&wt);            // Widget*
+  static_assert(std::is_same_v<decltype(rw.get<2>()), Widget*&>);
+  rw.destroy<2>();
+  assert(wt.tag == 8);             // 引用成员析构不影响被引用对象
+
+  return 0;
+}
