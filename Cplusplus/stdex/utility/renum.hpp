@@ -78,7 +78,8 @@ struct __storage_meta
       size_t __bool_cnt = 0;                                   // bool niche：bool成员数
       size_t __empty_cnt = 0;                                  // bool niche：空类成员数
       size_t __bool_index = 0;                                 // bool niche：bool成员索引
-      std::array<size_t, __member_count> __empty_members{};    // bool niche：空变体成员序表
+      std::array<size_t, __member_count> __empty_members{};    // bool niche：空变体成员序表（值→成员序反查）
+      std::array<unsigned char, __member_count> __empty_code{}; // bool niche：成员→编码值正表（construct O(1)）
     } m;
     template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
       using storage_t = __storage_type<I>;        // 引用成员适配后为指针
@@ -105,7 +106,9 @@ struct __storage_meta
         ++m.__bool_cnt;
         m.__bool_index = I;
       } else if constexpr (std::is_empty_v<member_plain_t>) {
-        m.__empty_members[m.__empty_cnt++] = I;
+        m.__empty_members[m.__empty_cnt] = I;
+        m.__empty_code[I] = static_cast<unsigned char>(2 + m.__empty_cnt); // 当前计数即ordinal
+        ++m.__empty_cnt;
       }
     }
     // 空类：零长度数组不合法，退化为1字节
@@ -303,10 +306,11 @@ struct __storage_base<T> : __storage_meta<T>
   template <size_t I>
   using __member_type = typename __base::template __member_type<I>;
 
-  // bool成员索引（判定保证恰好1个）与空变体成员序表（按出现序编号，index()反查用）
+  // bool成员索引（判定保证恰好1个）与空变体成员序表/编码正表（index()反查、construct O(1)用）
   // 均直接取自基类一次template for求得的__metadata，不再重复展开循环
   static constexpr size_t __bool_index = __base::__metadata.__bool_index;
   static constexpr auto __empty_members = __base::__metadata.__empty_members;
+  static constexpr auto __empty_code = __base::__metadata.__empty_code;
   static constexpr unsigned char __disengaged = static_cast<unsigned char>(__member_count + 1);
 
   // unsigned char直接读写：bool成员engaged时经construct_at创建bool对象（字节恒0/1，永不触碰bool值域规则）
@@ -346,12 +350,10 @@ struct __storage_base<T> : __storage_meta<T>
     if constexpr (I == __bool_index) {
       std::construct_at(reinterpret_cast<bool *>(&__slot), std::forward<Args>(args)...);
     } else {
-      // 空变体（Rust unit语义）：无对象，直接写编码字节
+      // 空变体（Rust unit语义）：无对象，直接写编码字节；I为编译期常量，正表索引即常量折叠
       static_assert(sizeof...(Args) == 0,
                     "construct for an empty member requires no arguments");
-      size_t j = 0;
-      while (__empty_members[j] != I) { ++j; }
-      __slot = static_cast<unsigned char>(2 + j);
+      __slot = __empty_code[I];
     }
     return (*this).template get<I>();
   }
