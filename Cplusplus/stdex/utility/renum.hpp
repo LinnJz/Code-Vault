@@ -139,12 +139,15 @@ struct __storage_meta
   }();
   static constexpr size_t __tag_bits = __metadata.__tag_bits;
   static constexpr size_t __tag_mask = __tag_bits ? (1uz << __tag_bits) - 1 : 0;
+  // niche开关（仿map::is_transparent）：用户类型内 using is_niche = void; 显式开启niche优化，
+  // 默认不开启走tag版。类型别名非数据成员，反射与布局均不受影响，requires即可检测。
+  static constexpr bool __niche_opt_in = requires { typename T::is_niche; };
   // 引用niche：全部引用成员（适配后指针强制非空 → null腾出）&& 对齐位容量足够（单成员bits=0亦可）
   static constexpr bool __niche_capable =
-      __metadata.__is_all_ref && (__member_count <= (1uz << __tag_bits));
+      __metadata.__is_all_ref && (__member_count <= (1uz << __tag_bits)) && __niche_opt_in;
   // bool niche：恰好1个bool成员 + 其余空类；编码空间 bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256
   static constexpr bool __bool_niche_capable =
-      __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256);
+      __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256) && __niche_opt_in;
 };
 
 // ============ 主模板仅声明，约束特化按 __niche_capable 互斥选择 ============

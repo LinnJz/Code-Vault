@@ -139,12 +139,15 @@ struct __storage_meta
   }();
   static constexpr size_t __tag_bits = __metadata.__tag_bits;
   static constexpr size_t __tag_mask = __tag_bits ? (1uz << __tag_bits) - 1 : 0;
+  // niche开关（仿map::is_transparent）：用户类型内 using is_niche = void; 显式开启niche优化，
+  // 默认不开启走tag版。类型别名非数据成员，反射与布局均不受影响，requires即可检测。
+  static constexpr bool __niche_opt_in = requires { typename T::is_niche; };
   // 引用niche：全部引用成员（适配后指针强制非空 → null腾出）&& 对齐位容量足够（单成员bits=0亦可）
   static constexpr bool __niche_capable =
-      __metadata.__is_all_ref && (__member_count <= (1uz << __tag_bits));
+      __metadata.__is_all_ref && (__member_count <= (1uz << __tag_bits)) && __niche_opt_in;
   // bool niche：恰好1个bool成员 + 其余空类；编码空间 bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256
   static constexpr bool __bool_niche_capable =
-      __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256);
+      __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256) && __niche_opt_in;
 };
 
 // ============ 主模板仅声明，约束特化按 __niche_capable 互斥选择 ============
@@ -377,17 +380,21 @@ struct __storage_base<T> : __storage_meta<T>
 #include <cstdio>
 #include <string>
 
-struct Ref2   { int& a; std::string& b; };            // 全引用：可niche
-struct Ref1   { int& a; };                            // 单引用：可niche
-struct Ref3   { int& a; std::string& b; double& c; }; // 3引用：2位对齐位足够
-struct NoNiche { int& a; char& b; };                  // char对齐1，无位可借 → tag回退
-struct Mixed  { int x; std::string& s; };             // 含值成员 → tag回退
+// ---- niche开关（仿map::is_transparent）：using is_niche = void; 显式开启 ----
+// 不写开关的类型即使满足条件也走tag版（默认关闭）
+struct Ref2   { int& a; std::string& b; using is_niche = void; };            // 全引用+开关：可niche
+struct Ref1   { int& a; using is_niche = void; };                            // 单引用+开关：可niche
+struct Ref3   { int& a; std::string& b; double& c; using is_niche = void; }; // 3引用：2位对齐位足够
+struct NoNiche { int& a; char& b; using is_niche = void; };                  // char对齐1，无位可借 → tag回退
+struct Mixed  { int x; std::string& s; };                                       // 无开关+含值成员 → tag回退
+struct Ref2NoOpt { int& a; std::string& b; };                                   // 满足条件但无开关 → tag回退
 
 // ---- bool niche（Rust语义）：恰好1个bool + 其余空类 ----
-struct Bool1  { bool a; };                              // 单bool：可niche（optional<bool>）
-struct Bool2  { bool a; struct None {} none; };         // bool+空类：可niche
-struct Bool3  { bool a; struct None {} none; struct Empty {} e; }; // bool+2空类：可niche
-struct BoolFail { bool a; bool b; };                    // 双bool：值域重叠 → tag回退
+struct Bool1  { bool a; using is_niche = void; };                              // 单bool+开关：可niche
+struct Bool2  { bool a; struct None {} none; using is_niche = void; };         // bool+空类+开关：可niche
+struct Bool3  { bool a; struct None {} none; struct Empty {} e; using is_niche = void; }; // bool+2空类
+struct BoolFail { bool a; bool b; using is_niche = void; };                    // 双bool：值域重叠 → tag回退
+struct Bool1NoOpt { bool a; };                                                    // 满足条件但无开关 → tag回退
 
 // ---- 编译期判定 ----
 static_assert(std::__storage_meta<Ref2>::__niche_capable);
@@ -395,12 +402,14 @@ static_assert(std::__storage_meta<Ref1>::__niche_capable);
 static_assert(std::__storage_meta<Ref3>::__niche_capable);
 static_assert(!std::__storage_meta<NoNiche>::__niche_capable);
 static_assert(!std::__storage_meta<Mixed>::__niche_capable);
+static_assert(!std::__storage_meta<Ref2NoOpt>::__niche_capable);   // 无开关 → 不启用
 
 static_assert(std::__storage_meta<Bool1>::__bool_niche_capable);
 static_assert(std::__storage_meta<Bool2>::__bool_niche_capable);
 static_assert(std::__storage_meta<Bool3>::__bool_niche_capable);
 static_assert(!std::__storage_meta<BoolFail>::__bool_niche_capable);
 static_assert(!std::__storage_meta<BoolFail>::__niche_capable);
+static_assert(!std::__storage_meta<Bool1NoOpt>::__bool_niche_capable); // 无开关 → 不启用
 
 // ---- 尺寸：niche版恒8字节（无tag字段），tag版按现状 ----
 static_assert(sizeof(std::__storage_base<Ref2>) == 8);   // 旧方案16 → 省8
@@ -408,12 +417,14 @@ static_assert(sizeof(std::__storage_base<Ref1>) == 8);
 static_assert(sizeof(std::__storage_base<Ref3>) == 8);
 static_assert(sizeof(std::__storage_base<NoNiche>) == 16);
 static_assert(sizeof(std::__storage_base<Mixed>) == 16); // string& 适配为指针8 + tag 1 → 对齐8
+static_assert(sizeof(std::__storage_base<Ref2NoOpt>) == 16); // 无开关 → tag版
 
 // ---- 尺寸：bool niche恒1字节（tag版2字节） ----
 static_assert(sizeof(std::__storage_base<Bool1>) == 1);
 static_assert(sizeof(std::__storage_base<Bool2>) == 1);
 static_assert(sizeof(std::__storage_base<Bool3>) == 1);
 static_assert(sizeof(std::__storage_base<BoolFail>) == 2); // tag版：byte[1] + tag[1]
+static_assert(sizeof(std::__storage_base<Bool1NoOpt>) == 2); // 无开关 → tag版
 
 // ---- 返回类型：引用成员const不穿透 ----
 static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get<0>()), int&>);
@@ -535,6 +546,15 @@ int main() {
     r.construct<1>(true);
     assert(r.index() == 1 && r.get<1>() == true);
     r.destroy<1>();
+    assert(r.index() == 2);
+  }
+
+  { // 无开关 → tag版回退（默认关闭）
+    std::__storage_base<Ref2NoOpt> r;
+    int x = 7;
+    r.construct<0>(x);
+    assert(r.index() == 0 && r.get<0>() == 7);
+    r.destroy<0>();
     assert(r.index() == 2);
   }
 
