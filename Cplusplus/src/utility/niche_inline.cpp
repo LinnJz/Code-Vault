@@ -149,14 +149,8 @@ struct __storage_meta
   // bool niche：恰好1个bool成员 + 其余空类；编码空间 bool 2状态 + 每空变体1状态 + disengaged 1状态 ≤ 256
   static constexpr bool __bool_niche_capable =
       __metadata.__bool_cnt == 1 && (2 + __metadata.__empty_cnt + 1 <= 256) && __niche_opt_in;
-      
-  constexpr size_t size() const noexcept {
-    return __member_count;
-  }
-
-  // 按类型查找唯一成员索引（get<U>用）：[cvref]U经remove_cvref与tuple成员比较；
-  // 无匹配或匹配多个返回__member_count哨兵。标准元编程：反射成员类型转为
-  // std::tuple<...>类型容器（仅声明取类型，不定义变量），fold表达式判定。
+  
+  // 类型映射
   template <size_t... Is>
   static auto __member_tuple_impl(std::index_sequence<Is...>) -> std::tuple<__member_type<Is>...>;
   using __member_tuple_t = decltype(__member_tuple_impl(std::make_index_sequence<__member_count>{}));
@@ -167,8 +161,7 @@ struct __storage_meta
   template <class U, class... Ts>
   struct __index_of_impl<U, std::tuple<Ts...>> {
     // 精确匹配：U须与某个成员类型完全相等（含cvref），如 int&→int&成员、int→int值成员、const int&→const int&成员
-    static constexpr size_t __count =
-        (size_t{std::is_same_v<U, Ts>} + ...);
+    static constexpr size_t __count = (size_t{std::is_same_v<U, Ts>} + ...);
     template <size_t... Is>
     static constexpr size_t __find(std::index_sequence<Is...>) noexcept {
       size_t idx = __member_count;
@@ -182,7 +175,25 @@ struct __storage_meta
 
   template <class U>
   static constexpr size_t __index_of = __index_of_impl<U, __member_tuple_t>::__value;
+
+  // 类型表是否存在精确匹配U（含cvref）；匹配多个（如Amb{int a; int b;}）同样返回true
+  template <class U>
+  static constexpr bool __has_member_type = __index_of_impl<U, __member_tuple_t>::__count >= 1;
+
+#pragma region
+  constexpr size_t size() const noexcept {
+    return __member_count;
+  }
+  
+  constexpr size_t npos() const noexcept {
+    return __member_count;
+  }
+#pragma endregion
 };
+
+// 辅助using：取T的第I个成员变量类型（对齐tuple_element_t风格：索引在前、类型在后）
+template <size_t I, class T>
+using __member_type_t = typename __storage_meta<T>::template __member_type<I>;
 
 // ============ 主模板仅声明，约束特化按 __niche_capable 互斥选择 ============
 template <class T>
@@ -234,12 +245,30 @@ struct __storage_base<T> : __storage_meta<T>
     }
   }
 
-  // 按类型取（仿variant::get<T>，转发按索引get）；U须唯一匹配一个成员（remove_cvref比较）
   template <class U>
   constexpr decltype(auto) get(this auto &&self) noexcept {
     static_assert(__base::template __index_of<U> != __member_count,
                   "get<U>: U must match exactly one member type");
     return self.template get<__base::template __index_of<U>>();
+  }
+
+  // get_if<I>：engaged且index==I时返回指向get<I>()结果的指针，否则nullptr；
+  // 返回类型随self的const传播（const对象→const M*）；空类成员无存储可指，编译期拒绝
+  template <size_t I>
+  constexpr auto get_if(this auto &&self) noexcept {
+    static_assert(I < __member_count, "Index out of range");
+    static_assert(!std::is_empty_v<std::remove_reference_t<__member_type<I>>>,
+                  "get_if: empty members have no addressable storage; use get<I>()");
+    using pointer = std::add_pointer_t<decltype(self.template get<I>())>;
+    if (self.index() != I) return pointer{nullptr};
+    return std::addressof(self.template get<I>());
+  }
+
+  template <class U>
+  constexpr auto get_if(this auto &&self) noexcept {
+    static_assert(__base::template __index_of<U> != __member_count,
+                  "get_if<U>: U must match exactly one member type");
+    return self.template get_if<__base::template __index_of<U>>();
   }
 
   template <size_t I, class... Args>
@@ -315,12 +344,27 @@ struct __storage_base<T> : __storage_meta<T>
     return *static_cast<std::remove_reference_t<__member_type<I>> *>(addr);
   }
 
-  // 按类型取（仿variant::get<T>，转发按索引get）；U须唯一匹配一个成员（remove_cvref比较）
   template <class U>
   constexpr decltype(auto) get(this auto &&self) noexcept {
     static_assert(__base::template __index_of<U> != __member_count,
                   "get<U>: U must match exactly one member type");
     return self.template get<__base::template __index_of<U>>();
+  }
+
+  // get_if<I>：engaged且index==I时返回指向get<I>()结果的指针，否则nullptr
+  template <size_t I>
+  constexpr auto get_if(this auto &&self) noexcept {
+    static_assert(I < __member_count, "Index out of range");
+    using pointer = std::add_pointer_t<decltype(self.template get<I>())>;
+    if (self.index() != I) return pointer{nullptr};
+    return std::addressof(self.template get<I>());
+  }
+
+  template <class U>
+  constexpr auto get_if(this auto &&self) noexcept {
+    static_assert(__base::template __index_of<U> != __member_count,
+                  "get_if<U>: U must match exactly one member type");
+    return self.template get_if<__base::template __index_of<U>>();
   }
 
   template <size_t I, class... Args>
@@ -396,12 +440,30 @@ struct __storage_base<T> : __storage_meta<T>
     }
   }
 
-  // 按类型取（仿variant::get<T>，转发按索引get）；U须唯一匹配一个成员（remove_cvref比较）
   template <class U>
   constexpr decltype(auto) get(this auto &&self) noexcept {
     static_assert(__base::template __index_of<U> != __member_count,
                   "get<U>: U must match exactly one member type");
     return self.template get<__base::template __index_of<U>>();
+  }
+
+  // get_if<I>：engaged且index==I时返回指向get<I>()结果的指针，否则nullptr；
+  // 空类成员按值返回无存储可指，编译期拒绝
+  template <size_t I>
+  constexpr auto get_if(this auto &&self) noexcept {
+    static_assert(I < __member_count, "Index out of range");
+    static_assert(I == __bool_index,
+                  "get_if: empty members have no addressable storage; use get<I>()");
+    using pointer = std::add_pointer_t<decltype(self.template get<I>())>;
+    if (self.index() != I) return pointer{nullptr};
+    return std::addressof(self.template get<I>());
+  }
+
+  template <class U>
+  constexpr auto get_if(this auto &&self) noexcept {
+    static_assert(__base::template __index_of<U> != __member_count,
+                  "get_if<U>: U must match exactly one member type");
+    return self.template get_if<__base::template __index_of<U>>();
   }
 
   template <size_t I, class... Args>
@@ -476,6 +538,36 @@ static_assert(std::__storage_meta<RefMix>::__index_of<int&> == 0);         // a
 static_assert(std::__storage_meta<RefMix>::__index_of<int> == 1);          // b
 static_assert(std::__storage_meta<RefMix>::__index_of<const int&> == 2);   // c
 static_assert(std::__storage_meta<RefMix>::__index_of<const int> == 3);    // 无精确匹配 → 哨兵
+
+// ---- __has_member_type：类型表是否存在精确匹配 ----
+static_assert(std::__storage_meta<Ref2>::__has_member_type<int&>);
+static_assert(std::__storage_meta<Ref2>::__has_member_type<std::string&>);
+static_assert(!std::__storage_meta<Ref2>::__has_member_type<int>);       // 精确匹配：int≠int&
+static_assert(!std::__storage_meta<Ref2>::__has_member_type<const int&>);
+static_assert(std::__storage_meta<RefMix>::__has_member_type<int&>);
+static_assert(std::__storage_meta<RefMix>::__has_member_type<int>);
+static_assert(std::__storage_meta<RefMix>::__has_member_type<const int&>);
+static_assert(!std::__storage_meta<RefMix>::__has_member_type<const int>);
+static_assert(std::__storage_meta<Amb>::__has_member_type<int>);         // 歧义也存在 → true
+static_assert(std::__storage_meta<Bool2>::__has_member_type<bool>);
+static_assert(std::__storage_meta<Bool2>::__has_member_type<Bool2::None>);
+
+// ---- 辅助using：取T的第I个成员变量类型（索引在前） ----
+static_assert(std::is_same_v<std::__member_type_t<0, Ref2>, int&>);
+static_assert(std::is_same_v<std::__member_type_t<1, Ref2>, std::string&>);
+static_assert(std::is_same_v<std::__member_type_t<0, RefMix>, int&>);
+static_assert(std::is_same_v<std::__member_type_t<1, RefMix>, int>);
+static_assert(std::is_same_v<std::__member_type_t<2, RefMix>, const int&>);
+static_assert(std::is_same_v<std::__member_type_t<0, Bool2>, bool>);
+static_assert(std::is_same_v<std::__member_type_t<1, Bool2>, Bool2::None>);
+
+// ---- 返回类型：get_if ----
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get_if<0>()), int*>);
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Ref2>&>().get_if<int&>()), int*>);
+static_assert(std::is_same_v<decltype(std::declval<const std::__storage_base<Ref2>&>().get_if<0>()), int*>);      // 引用成员const不穿透
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Mixed>&>().get_if<0>()), int*>);
+static_assert(std::is_same_v<decltype(std::declval<const std::__storage_base<Mixed>&>().get_if<0>()), const int*>); // 值成员const传播
+static_assert(std::is_same_v<decltype(std::declval<std::__storage_base<Bool2>&>().get_if<0>()), bool*>);
 
 // ---- 编译期判定 ----
 static_assert(std::__storage_meta<Ref2>::__niche_capable);
@@ -659,6 +751,31 @@ int main() {
     b.construct<1>();
     [[maybe_unused]] Bool2::None n2 = b.get<Bool2::None>(); // 空变体按值返回
     b.destroy<1>();
+  }
+
+  { // get_if：安全查询路径（不匹配返回nullptr，不触发断言）
+    std::__storage_base<Mixed> m;
+    m.construct<0>(42);
+    assert(m.get_if<0>() != nullptr && *m.get_if<0>() == 42);
+    assert(m.get_if<1>() == nullptr);                // 非活动变体 → nullptr
+    m.destroy<0>();
+    assert(m.get_if<0>() == nullptr);                // disengaged → nullptr
+    m.construct<0>(7);
+    assert(*m.get_if<int>() == 7);                   // 按类型get_if
+    m.destroy<0>();
+
+    std::__storage_base<Ref2> r;
+    int x = 9;
+    r.construct<0>(x);
+    assert(r.get_if<int&>() == &x);                  // 引用成员 → 指向被引用对象
+    r.destroy<0>();
+    assert(r.get_if<0>() == nullptr);
+
+    std::__storage_base<Bool2> b;
+    b.construct<0>(true);
+    assert(b.get_if<bool>() != nullptr && *b.get_if<bool>());
+    b.destroy<0>();
+    assert(b.get_if<0>() == nullptr);
   }
 
   { // 精确匹配区分三种类型（用户例：int&/int/const int&）
