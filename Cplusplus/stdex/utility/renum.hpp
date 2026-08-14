@@ -16,7 +16,7 @@
 
 
 namespace std { 
-  
+
 template <class T>
 struct __storage_meta 
 {
@@ -88,7 +88,19 @@ struct __storage_meta
       bool __are_all_mems_move_constructor_nothrow = true;
       bool __are_all_mems_default_constructor_nothrow = true;
       bool __are_all_mems_ref_qualified = true;
+      bool __are_all_mems_three_way_comparable = true;
+      bool __are_all_mems_compare_nothrow = true;
       bool __are_all_empty_type_aggregated = true;
+      bool __are_all_mems_destructible = true;
+      bool __are_all_mems_trivially_destructible = true;
+      bool __are_all_mems_copy_constructible = true;
+      bool __are_all_mems_trivially_copy_constructible = true;
+      bool __are_all_mems_copy_assignable = true;
+      bool __are_all_mems_trivially_copy_assignable = true;
+      bool __are_all_mems_move_constructible = true;
+      bool __are_all_mems_trivially_move_constructible = true;
+      bool __are_all_mems_move_assignable = true;
+      bool __are_all_mems_trivially_move_assignable = true;
       size_t __ref_tag_bits = std::numeric_limits<size_t>::digits;
       size_t __ref_tag_mask = 0;
       size_t __bool_type_index = 0;
@@ -100,14 +112,28 @@ struct __storage_meta
     template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
       using storage_t = __storage_type<I>;
       using storage_plain_t = std::remove_pointer_t<storage_t>;
+      using member_plain_t = std::remove_cvref_t<__member_type<I>>;
       if (m.__max_size < sizeof(storage_t)) { m.__max_size = sizeof(storage_t); }
       if (m.__max_align < alignof(storage_t)) { m.__max_align = alignof(storage_t); }
+      m.__are_all_mems_copy_assignment_nothrow &= std::is_nothrow_copy_assignable_v<storage_t>;
+      m.__are_all_mems_copy_constructor_nothrow &= std::is_nothrow_copy_constructible_v<storage_t>;
+      m.__are_all_mems_move_assignment_nothrow &= std::is_nothrow_move_assignable_v<storage_t>;
       m.__are_all_mems_move_constructor_nothrow &= std::is_nothrow_move_constructible_v<storage_t>;
       m.__are_all_mems_default_constructor_nothrow &= std::is_nothrow_default_constructible_v<storage_t>;
-      m.__are_all_mems_copy_constructor_nothrow &= std::is_nothrow_copy_constructible_v<storage_t>;
-      m.__are_all_mems_copy_assignment_nothrow &= std::is_nothrow_copy_assignable_v<storage_t>;
-      m.__are_all_mems_move_assignment_nothrow &= std::is_nothrow_move_assignable_v<storage_t>;
+      // availability: folded on member types (not storage) so that e.g. const value members
+      // correctly make assignment unavailable; references to incomplete types are fine.
+      m.__are_all_mems_destructible &= std::is_destructible_v<__member_type<I>>;
+      m.__are_all_mems_trivially_destructible &= std::is_trivially_destructible_v<__member_type<I>>;
+      m.__are_all_mems_copy_constructible &= std::is_copy_constructible_v<__member_type<I>>;
+      m.__are_all_mems_trivially_copy_constructible &= std::is_trivially_copy_constructible_v<__member_type<I>>;
+      m.__are_all_mems_copy_assignable &= std::is_copy_constructible_v<__member_type<I>> && std::is_copy_assignable_v<__member_type<I>>;
+      m.__are_all_mems_trivially_copy_assignable &= std::is_trivially_copy_constructible_v<__member_type<I>> && std::is_trivially_copy_assignable_v<__member_type<I>>;
+      m.__are_all_mems_move_constructible &= std::is_move_constructible_v<__member_type<I>>;
+      m.__are_all_mems_trivially_move_constructible &= std::is_trivially_move_constructible_v<__member_type<I>>;
+      m.__are_all_mems_move_assignable &= std::is_move_constructible_v<__member_type<I>> && std::is_move_assignable_v<__member_type<I>>;
+      m.__are_all_mems_trivially_move_assignable &= std::is_trivially_move_constructible_v<__member_type<I>> && std::is_trivially_move_assignable_v<__member_type<I>>;
       m.__are_all_mems_ref_qualified &= std::is_reference_v<__member_type<I>>;
+      
       if constexpr (std::is_reference_v<__member_type<I>> && requires { sizeof(storage_plain_t); }) { 
         // the address must be divisible by alignof (alignof is a power of 2),
         // with the lower log2(alignof) bits always being 0.
@@ -115,6 +141,16 @@ struct __storage_meta
       } else if constexpr (std::is_reference_v<__member_type<I>>) {
         m.__are_all_mems_ref_qualified = false;  // points to an incomplete type, giving up the niche
       }
+      
+      if constexpr (std::is_reference_v<__member_type<I>> && !requires { sizeof(member_plain_t); }) {
+          m.__are_all_mems_three_way_comparable = false;
+          m.__are_all_mems_compare_nothrow = false;
+      } else if constexpr (!std::is_empty_v<member_plain_t>) {
+          m.__are_all_mems_three_way_comparable &= std::three_way_comparable<member_plain_t>;
+          m.__are_all_mems_compare_nothrow &= std::three_way_comparable<member_plain_t> &&
+              requires (member_plain_t const &a, member_plain_t const &b) { { a <=> b } noexcept; };
+      }
+      
       if constexpr (std::is_same_v<storage_t, bool>) {
         m.__bool_type_index = I;
         ++m.__bool_type_cnt;
@@ -195,10 +231,13 @@ struct __storage_base<T> : __storage_meta<T>
     using storage_t = __storage_type<I>;
     using member_unref_t = std::remove_reference_t<__member_type<I>>;
     if constexpr (std::is_reference_v<__member_type<I>>) {
-      return **reinterpret_cast<storage_t *>(self.__storage);
+      using storage_ptr_t = std::add_const_t<__storage_type<I>> *;
+      return **reinterpret_cast<storage_ptr_t>(self.__storage);
 
     } else {
-      return std::forward_like<self_t>(*reinterpret_cast<member_unref_t *>(self.__storage));
+      using member_ptr_t = std::conditional_t<std::is_const_v<std::remove_reference_t<self_t>>,
+            member_unref_t const *, member_unref_t *>;
+      return std::forward_like<self_t>(*reinterpret_cast<member_ptr_t>(self.__storage));
     }
   }
 
@@ -252,6 +291,8 @@ struct __storage_base<T> : __storage_meta<T>
   using __base = __storage_meta<T>;
   template <size_t I>
   using __member_type = typename __base::template __member_type<I>;
+  template <size_t I>
+  using __storage_type = typename __base::template __storage_type<I>;
   using __base::__member_count;
   using __base::__metadata;
   
@@ -381,6 +422,231 @@ struct __storage_base<T> : __storage_meta<T>
 
 #pragma endregion
 
+};
+
+// ============================================================================
+// variant_builder 单类定义：C++23 P0848「条件平凡特殊成员」
+//   libc++ 的五层继承骨架是为了在 C++17 下表达"三态"（平凡/可用/不可用）而生的；
+//   P0848 允许类模板的成员函数带 requires-clause（[dcl.decl.general]/4 +
+//   [temp.pre]/1），[special]/6 的 eligible 判定、[class.prop] 的平凡性判定、
+//   [dcl.fct.def.default]/4（非 eligible 的 defaulted 特殊成员定义为 deleted）
+//   合起来恰好覆盖同样的三态，因此可以压缩为一个类：
+//     平凡可用 → = default（编译器位拷贝，保持平凡性）
+//     可用     → 手写成员级操作（同索引赋值 / destroy-then-construct）
+//     不可用   → = delete（const 成员 / 已删除成员的传播）
+//   注意：声明带约束的拷贝构造仍会抑制隐式移动构造，五个维度必须全部显式声明；
+//   三个重载的 requires-clause 必须互斥。
+// ============================================================================
+
+// 运行时按 index 分派成编译期 I：visitor 收到 std::integral_constant<size_t, I>。
+// 要求 visitor 对所有 I 返回同一类型（当前骨架内均为 void）。
+template <class Self, class F>
+constexpr decltype(auto) __at_index(Self&& self, F&& f) {
+  constexpr size_t N = std::remove_cvref_t<Self>::__member_count;
+  return [&]<size_t... Is>(std::index_sequence<Is...>) -> decltype(auto) {
+    using R = std::common_reference_t<decltype(f(std::integral_constant<size_t, Is>{}))...>;
+    auto dispatch = [&]<size_t I>(this auto&& d) -> R {
+      if constexpr (I == N) {
+        std::unreachable();  // disengaged
+      } else if (self.index() == I) {
+        return f(std::integral_constant<size_t, I>{});
+      } else {
+        return d.template operator()<I + 1>();
+      }
+    };
+    return dispatch.template operator()<0>();
+  }(std::make_index_sequence<N>{});
+}
+
+template <class T>
+class variant_builder {
+  using __meta = __storage_meta<T>;
+  
+public:
+  constexpr variant_builder() = default;
+
+  // ---- destructor ----
+  ~variant_builder() requires (__meta::__metadata.__are_all_mems_trivially_destructible) = default;
+  ~variant_builder() requires (!__meta::__metadata.__are_all_mems_trivially_destructible &&
+                               __meta::__metadata.__are_all_mems_destructible) {
+    if (__s.has_value()) {
+      __at_index(__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template destroy<I>())) 
+          -> void {
+        __s.template destroy<I>();
+      });
+    }
+  }
+  ~variant_builder() requires (!__meta::__metadata.__are_all_mems_destructible) = delete;
+
+  // ---- copy constructor ----
+  constexpr variant_builder(const variant_builder&) 
+      requires (__meta::__metadata.__are_all_mems_trivially_copy_constructible)
+      = default;
+  constexpr variant_builder(const variant_builder& other)
+      noexcept(__meta::__metadata.__are_all_mems_copy_constructor_nothrow)
+      requires (!__meta::__metadata.__are_all_mems_trivially_copy_constructible &&
+                __meta::__metadata.__are_all_mems_copy_constructible)
+      : __s() {
+    if (other.__s.has_value()) {
+      __at_index(other.__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template construct<I>(other.__s.template get<I>()))) 
+          -> void {
+        __s.template construct<I>(other.__s.template get<I>());
+      });
+    }
+  }
+  constexpr variant_builder(const variant_builder&) 
+      requires (!__meta::__metadata.__are_all_mems_copy_constructible)
+      = delete;
+
+  // ---- move constructor ----
+  constexpr variant_builder(variant_builder&&) 
+      requires (__meta::__metadata.__are_all_mems_trivially_move_constructible) 
+      = default;
+  constexpr variant_builder(variant_builder&& other)
+      noexcept(__meta::__metadata.__are_all_mems_move_constructor_nothrow)
+      requires (!__meta::__metadata.__are_all_mems_trivially_move_constructible &&
+                __meta::__metadata.__are_all_mems_move_constructible)
+      : __s() {
+    if (other.__s.has_value()) {
+      __at_index(other.__s, [&]<size_t I>(std::integral_constant<size_t, I>) noexcept(
+          std::is_reference_v<typename __meta::template __member_type<I>> ||
+          std::is_nothrow_move_constructible_v<typename __meta::template __storage_type<I>>) 
+          -> void {
+        if constexpr (std::is_reference_v<typename __meta::template __member_type<I>>) {
+          __s.template construct<I>(other.__s.template get<I>());  // reference members are always copied
+        } else {
+          __s.template construct<I>(std::move(other.__s.template get<I>()));
+        }
+      });
+    }
+  }
+  constexpr variant_builder(variant_builder&&) 
+      requires (!__meta::__metadata.__are_all_mems_move_constructible) 
+      = delete;
+
+  // ---- copy assignment ----
+  constexpr variant_builder& operator=(const variant_builder&) 
+      requires (__meta::__metadata.__are_all_mems_trivially_copy_assignable) 
+      = default;
+  constexpr variant_builder& operator=(const variant_builder& other)
+      noexcept(__meta::__metadata.__are_all_mems_copy_assignment_nothrow &&
+               __meta::__metadata.__are_all_mems_copy_constructor_nothrow)
+      requires (!__meta::__metadata.__are_all_mems_trivially_copy_assignable &&
+                __meta::__metadata.__are_all_mems_copy_assignable) {
+    if (__s.index() == other.__s.index()) {
+      if (__s.has_value()) {
+        __at_index(__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template get<I>() = other.__s.template get<I>())) 
+          -> void {
+          __s.template get<I>() = other.__s.template get<I>();
+        });
+      }
+    } else {
+      if (__s.has_value()) {
+        __at_index(__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template destroy<I>())) 
+          -> void {
+          __s.template destroy<I>();
+        });
+      }
+      if (other.__s.has_value()) {
+        __at_index(other.__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template construct<I>(other.__s.template get<I>()))) 
+          -> void {
+          __s.template construct<I>(other.__s.template get<I>());
+        });
+      }
+    }
+    return *this;
+  }
+  constexpr variant_builder& operator=(const variant_builder&) 
+      requires (!__meta::__metadata.__are_all_mems_copy_assignable) 
+      = delete;
+
+  // ---- move assignment ----
+  constexpr variant_builder& operator=(variant_builder&&) 
+      requires (__meta::__metadata.__are_all_mems_trivially_move_assignable) 
+      = default;
+  constexpr variant_builder& operator=(variant_builder&& other)
+      noexcept(__meta::__metadata.__are_all_mems_move_assignment_nothrow &&
+               __meta::__metadata.__are_all_mems_move_constructor_nothrow)
+      requires (!__meta::__metadata.__are_all_mems_trivially_move_assignable &&
+                __meta::__metadata.__are_all_mems_move_assignable) {
+    if (__s.index() == other.__s.index()) {
+      if (__s.has_value()) {
+        __at_index(__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template get<I>() = std::move(other.__s.template get<I>()))) 
+          -> void {
+          __s.template get<I>() = std::move(other.__s.template get<I>());
+        });
+      }
+    } else {
+      if (__s.has_value()) {
+        __at_index(__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
+          noexcept(noexcept(__s.template destroy<I>())) 
+          -> void {
+          __s.template destroy<I>();
+        });
+      }
+      if (other.__s.has_value()) {
+        __at_index(other.__s, [&]<size_t I>(std::integral_constant<size_t, I>) noexcept(
+            std::is_reference_v<typename __meta::template __member_type<I>> ||
+            std::is_nothrow_move_constructible_v<typename __meta::template __storage_type<I>>) 
+            -> void {
+          if constexpr (std::is_reference_v<typename __meta::template __member_type<I>>) {
+            __s.template construct<I>(other.__s.template get<I>());
+          } else {
+            __s.template construct<I>(std::move(other.__s.template get<I>()));
+          }
+        });
+      }
+    }
+    return *this;
+  }
+  constexpr variant_builder& operator=(variant_builder&&) 
+      requires (!__meta::__metadata.__are_all_mems_move_assignable) 
+      = delete;
+
+  constexpr std::size_t size() const noexcept { return __meta::__member_count; }
+  constexpr std::size_t npos() const noexcept { return __meta::__member_count; }
+  constexpr bool has_value() const noexcept { return __s.has_value(); }
+  constexpr std::size_t index() const noexcept { return __s.index(); }
+
+  template <size_t I>
+  constexpr decltype(auto) get(this auto&& self) noexcept { return self.__s.template get<I>(); }
+  template <class U>
+  constexpr decltype(auto) get(this auto&& self) noexcept { return self.__s.template get<U>(); }
+
+  template <size_t I, class... Args>
+  constexpr decltype(auto) emplace(Args&&... args) noexcept(
+      std::is_reference_v<typename __meta::template __member_type<I>> ||
+      std::is_nothrow_constructible_v<typename __meta::template __storage_type<I>, Args...>) {
+    if (__s.has_value()) {
+      __at_index(__s, [&]<size_t J>(std::integral_constant<size_t, J>) 
+        noexcept(noexcept(__s.template destroy<J>())) 
+        -> void {
+        __s.template destroy<J>();
+      });
+    }
+    return __s.template construct<I>(std::forward<Args>(args)...);
+  }
+
+  // ---- 以下三个仅声明，方法体稍后实现 ----
+  constexpr auto operator<=>(const variant_builder& other) const
+      noexcept(__meta::__metadata.__are_all_mems_compare_nothrow)
+      requires (__meta::__metadata.__are_all_mems_three_way_comparable);
+
+  template <class F>
+  constexpr decltype(auto) visit(this auto&& self, F&& f);
+
+  constexpr void swap(variant_builder& other) noexcept(
+      __meta::__metadata.__are_all_mems_move_constructor_nothrow &&
+      __meta::__metadata.__are_all_mems_move_assignment_nothrow);
+      
+private:
+  __storage_base<T> __s;
 };
 
 } // namespace std
