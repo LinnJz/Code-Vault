@@ -190,6 +190,7 @@ struct __storage_meta
     return __member_count;
   }
 #pragma endregion
+
 };
 
 template <size_t I, class T>
@@ -382,8 +383,10 @@ struct __storage_base<T> : __storage_meta<T>
     assert(self.index() == I && "get: member is not the active one");
     using self_t = decltype(self);
     using member_unref_t = std::remove_reference_t<__member_type<I>>;
+    using member_ptr_t = std::conditional_t<std::is_const_v<std::remove_reference_t<self_t>>,
+          member_unref_t const *, member_unref_t *>;
     if constexpr (I == __metadata.__bool_type_index) {
-      return std::forward_like<self_t>(*reinterpret_cast<member_unref_t *>(&self.__slot));
+      return std::forward_like<self_t>(*reinterpret_cast<member_ptr_t>(&self.__slot));
     } else {
       return __member_type<I>{};
     }
@@ -425,7 +428,7 @@ struct __storage_base<T> : __storage_meta<T>
 };
 
 // ============================================================================
-// variant_builder 单类定义：C++23 P0848「条件平凡特殊成员」
+// member_variant 单类定义：C++23 P0848「条件平凡特殊成员」
 //   libc++ 的五层继承骨架是为了在 C++17 下表达"三态"（平凡/可用/不可用）而生的；
 //   P0848 允许类模板的成员函数带 requires-clause（[dcl.decl.general]/4 +
 //   [temp.pre]/1），[special]/6 的 eligible 判定、[class.prop] 的平凡性判定、
@@ -459,15 +462,15 @@ constexpr decltype(auto) __at_index(Self&& self, F&& f) {
 }
 
 template <class T>
-class variant_builder {
+class member_variant {
   using __meta = __storage_meta<T>;
   
 public:
-  constexpr variant_builder() = default;
+  constexpr member_variant() = default;
 
   // ---- destructor ----
-  ~variant_builder() requires (__meta::__metadata.__are_all_mems_trivially_destructible) = default;
-  ~variant_builder() requires (!__meta::__metadata.__are_all_mems_trivially_destructible &&
+  constexpr ~member_variant() requires (__meta::__metadata.__are_all_mems_trivially_destructible) = default;
+  constexpr ~member_variant() requires (!__meta::__metadata.__are_all_mems_trivially_destructible &&
                                __meta::__metadata.__are_all_mems_destructible) {
     if (__s.has_value()) {
       __at_index(__s, [&]<size_t I>(std::integral_constant<size_t, I>) 
@@ -477,13 +480,13 @@ public:
       });
     }
   }
-  ~variant_builder() requires (!__meta::__metadata.__are_all_mems_destructible) = delete;
+  constexpr ~member_variant() requires (!__meta::__metadata.__are_all_mems_destructible) = delete;
 
   // ---- copy constructor ----
-  constexpr variant_builder(const variant_builder&) 
+  constexpr member_variant(const member_variant&) 
       requires (__meta::__metadata.__are_all_mems_trivially_copy_constructible)
       = default;
-  constexpr variant_builder(const variant_builder& other)
+  constexpr member_variant(const member_variant& other)
       noexcept(__meta::__metadata.__are_all_mems_copy_constructor_nothrow)
       requires (!__meta::__metadata.__are_all_mems_trivially_copy_constructible &&
                 __meta::__metadata.__are_all_mems_copy_constructible)
@@ -496,15 +499,15 @@ public:
       });
     }
   }
-  constexpr variant_builder(const variant_builder&) 
+  constexpr member_variant(const member_variant&) 
       requires (!__meta::__metadata.__are_all_mems_copy_constructible)
       = delete;
 
   // ---- move constructor ----
-  constexpr variant_builder(variant_builder&&) 
+  constexpr member_variant(member_variant&&) 
       requires (__meta::__metadata.__are_all_mems_trivially_move_constructible) 
       = default;
-  constexpr variant_builder(variant_builder&& other)
+  constexpr member_variant(member_variant&& other)
       noexcept(__meta::__metadata.__are_all_mems_move_constructor_nothrow)
       requires (!__meta::__metadata.__are_all_mems_trivially_move_constructible &&
                 __meta::__metadata.__are_all_mems_move_constructible)
@@ -522,15 +525,15 @@ public:
       });
     }
   }
-  constexpr variant_builder(variant_builder&&) 
+  constexpr member_variant(member_variant&&) 
       requires (!__meta::__metadata.__are_all_mems_move_constructible) 
       = delete;
 
   // ---- copy assignment ----
-  constexpr variant_builder& operator=(const variant_builder&) 
+  constexpr member_variant& operator=(const member_variant&) 
       requires (__meta::__metadata.__are_all_mems_trivially_copy_assignable) 
       = default;
-  constexpr variant_builder& operator=(const variant_builder& other)
+  constexpr member_variant& operator=(const member_variant& other)
       noexcept(__meta::__metadata.__are_all_mems_copy_assignment_nothrow &&
                __meta::__metadata.__are_all_mems_copy_constructor_nothrow)
       requires (!__meta::__metadata.__are_all_mems_trivially_copy_assignable &&
@@ -561,15 +564,15 @@ public:
     }
     return *this;
   }
-  constexpr variant_builder& operator=(const variant_builder&) 
+  constexpr member_variant& operator=(const member_variant&) 
       requires (!__meta::__metadata.__are_all_mems_copy_assignable) 
       = delete;
 
   // ---- move assignment ----
-  constexpr variant_builder& operator=(variant_builder&&) 
+  constexpr member_variant& operator=(member_variant&&) 
       requires (__meta::__metadata.__are_all_mems_trivially_move_assignable) 
       = default;
-  constexpr variant_builder& operator=(variant_builder&& other)
+  constexpr member_variant& operator=(member_variant&& other)
       noexcept(__meta::__metadata.__are_all_mems_move_assignment_nothrow &&
                __meta::__metadata.__are_all_mems_move_constructor_nothrow)
       requires (!__meta::__metadata.__are_all_mems_trivially_move_assignable &&
@@ -605,7 +608,7 @@ public:
     }
     return *this;
   }
-  constexpr variant_builder& operator=(variant_builder&&) 
+  constexpr member_variant& operator=(member_variant&&) 
       requires (!__meta::__metadata.__are_all_mems_move_assignable) 
       = delete;
 
@@ -615,9 +618,13 @@ public:
   constexpr std::size_t index() const noexcept { return __s.index(); }
 
   template <size_t I>
-  constexpr decltype(auto) get(this auto&& self) noexcept { return self.__s.template get<I>(); }
+  constexpr decltype(auto) get(this auto&& self) noexcept {
+    return std::forward_like<decltype(self)>(self).__s.template get<I>();
+  }
   template <class U>
-  constexpr decltype(auto) get(this auto&& self) noexcept { return self.__s.template get<U>(); }
+  constexpr decltype(auto) get(this auto&& self) noexcept {
+    return std::forward_like<decltype(self)>(self).__s.template get<U>();
+  }
 
   template <size_t I, class... Args>
   constexpr decltype(auto) emplace(Args&&... args) noexcept(
@@ -634,14 +641,14 @@ public:
   }
 
   // ---- 以下三个仅声明，方法体稍后实现 ----
-  constexpr auto operator<=>(const variant_builder& other) const
+  constexpr auto operator<=>(const member_variant& other) const
       noexcept(__meta::__metadata.__are_all_mems_compare_nothrow)
       requires (__meta::__metadata.__are_all_mems_three_way_comparable);
 
   template <class F>
   constexpr decltype(auto) visit(this auto&& self, F&& f);
 
-  constexpr void swap(variant_builder& other) noexcept(
+  constexpr void swap(member_variant& other) noexcept(
       __meta::__metadata.__are_all_mems_move_constructor_nothrow &&
       __meta::__metadata.__are_all_mems_move_assignment_nothrow);
       
