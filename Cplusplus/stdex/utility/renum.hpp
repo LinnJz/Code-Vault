@@ -106,8 +106,9 @@ struct __storage_meta
       size_t __bool_type_index = 0;
       size_t __bool_type_cnt = 0;
       size_t __empty_type_cnt = 0;
-      std::array<size_t, __member_count> __empty_type_indices{};
-      std::array<unsigned char, __member_count> __empty_type_niche_tags{};
+      // 0/1 = bool(false/true), 2..N = empty member(by declaration order), N+1 = disengaged
+      // the valid codes are exactly 0..N+1, a total of N+2
+      std::array<size_t, __member_count + 2> __index_of_code;
     } m;
     template for (constexpr auto I : std::views::iota(0zu, __member_count)) {
       using storage_t = __storage_type<I>;
@@ -120,8 +121,6 @@ struct __storage_meta
       m.__are_all_mems_move_assignment_nothrow &= std::is_nothrow_move_assignable_v<storage_t>;
       m.__are_all_mems_move_constructor_nothrow &= std::is_nothrow_move_constructible_v<storage_t>;
       m.__are_all_mems_default_constructor_nothrow &= std::is_nothrow_default_constructible_v<storage_t>;
-      // availability: folded on member types (not storage) so that e.g. const value members
-      // correctly make assignment unavailable; references to incomplete types are fine.
       m.__are_all_mems_destructible &= std::is_destructible_v<__member_type<I>>;
       m.__are_all_mems_trivially_destructible &= std::is_trivially_destructible_v<__member_type<I>>;
       m.__are_all_mems_copy_constructible &= std::is_copy_constructible_v<__member_type<I>>;
@@ -156,11 +155,16 @@ struct __storage_meta
         ++m.__bool_type_cnt;
       } else if constexpr (std::is_empty_v<storage_t>) {
         m.__are_all_empty_type_aggregated &= std::is_aggregate_v<storage_t> && std::is_trivially_destructible_v<storage_t>;
-        m.__empty_type_indices[m.__empty_type_cnt] = I;
-        m.__empty_type_niche_tags[I] = static_cast<unsigned char>(2 + m.__empty_type_cnt);
         ++m.__empty_type_cnt;
+        // 2..N = empty member(by declaration order): bools scanned so far offsets the code
+        m.__index_of_code[2 + I - m.__bool_type_cnt] = I;
       }
+      
     }
+    // 0/1 = bool(false/true), N+1 = disengaged
+    m.__index_of_code[0] = m.__index_of_code[1] = m.__bool_type_index;
+    m.__index_of_code[__member_count + 1] = __member_count;
+    
     // empty class/zero-length arrays aren't allowed, so they end up as 1 byte
     m.__max_size = m.__max_size ? m.__max_size : 1;
     m.__ref_tag_mask = m.__ref_tag_bits >= std::numeric_limits<size_t>::digits
@@ -180,17 +184,6 @@ struct __storage_meta
       __niche_opt_in && __metadata.__are_all_empty_type_aggregated && __metadata.__bool_type_cnt == 1 &&
       (2 + __metadata.__empty_type_cnt + 1 <= 256) &&
       (__metadata.__bool_type_cnt + __metadata.__empty_type_cnt) == __member_count;
-
-#pragma region
-  constexpr size_t size() const noexcept {
-    return __member_count;
-  }
-  
-  constexpr size_t npos() const noexcept {
-    return __member_count;
-  }
-#pragma endregion
-
 };
 
 template <size_t I, class T>
@@ -229,16 +222,14 @@ struct __storage_base<T> : __storage_meta<T>
     static_assert(I < __member_count, "Index out of range");
     assert(self.index() == I && "get: member is not the active one");
     using self_t = decltype(self);
-    using storage_t = __storage_type<I>;
     using member_unref_t = std::remove_reference_t<__member_type<I>>;
     if constexpr (std::is_reference_v<__member_type<I>>) {
-      using storage_ptr_t = std::add_const_t<__storage_type<I>> *;
-      return **reinterpret_cast<storage_ptr_t>(self.__storage);
+      return **reinterpret_cast<std::add_const_t<__storage_type<I>> *>(self.__storage);
 
     } else {
-      using member_ptr_t = std::conditional_t<std::is_const_v<std::remove_reference_t<self_t>>,
-            member_unref_t const *, member_unref_t *>;
-      return std::forward_like<self_t>(*reinterpret_cast<member_ptr_t>(self.__storage));
+      using cv_member_t = std::conditional_t<std::is_const_v<std::remove_reference_t<self_t>>,
+                                             std::add_const_t<member_unref_t>, member_unref_t>;
+      return std::forward_like<self_t>(*reinterpret_cast<cv_member_t *>(self.__storage));
     }
   }
 
@@ -324,22 +315,21 @@ struct __storage_base<T> : __storage_meta<T>
   }
 
   template <size_t I>
-  constexpr decltype(auto) get(this auto &&self) noexcept {
+  decltype(auto) get(this auto &&self) noexcept {
     static_assert(I < __member_count, "Index out of range");
     assert(self.index() == I && "get: member is not the active one");
-    using storage_t = __storage_type<I>;
-    return *reinterpret_cast<storage_t>(self.__slot & ~__metadata.__ref_tag_mask);
+    return *reinterpret_cast<__storage_type<I>>(self.__slot & ~__metadata.__ref_tag_mask);
   }
 
   template <class U>
-  constexpr decltype(auto) get(this auto &&self) noexcept {
+  decltype(auto) get(this auto &&self) noexcept {
     static_assert(__base::template __index_of<U> != __member_count,
                   "get<U>: U must match exactly one member type");
     return self.template get<__base::template __index_of<U>>();
   }
 
   template <size_t I, class... Args>
-  constexpr decltype(auto) construct(Args&&...args) noexcept {
+  decltype(auto) construct(Args&&...args) noexcept {
     static_assert(I < __member_count, "Index out of range");
     assert(!has_value() && "construct: storage already engaged");
     static_assert(sizeof...(Args) == 1 && (std::is_lvalue_reference_v<Args> && ...),
@@ -370,36 +360,38 @@ struct __storage_base<T> : __storage_meta<T>
   using __base = __storage_meta<T>;
   template <size_t I>
   using __member_type = typename __base::template __member_type<I>;
-  using __base::__member_count; // [1...254]
+  using __base::__member_count; // 1byte 0...255, member_cnt[1...256 - 1(disengaged) - 1(true/false)] 
   using __base::__metadata;
   
   static constexpr unsigned char __disengaged = static_cast<unsigned char>(__member_count + 1);
-  unsigned char __slot = __disengaged;
+
+  static constexpr unsigned char __code_of_member(size_t I) noexcept {
+    return static_cast<unsigned char>(2 + I - (I > __metadata.__bool_type_index));
+  }
+  
+  union __union {
+    bool __bool_value;
+    unsigned char __state_code = __disengaged;
+  } __u;
 
 #pragma region
-  constexpr std::size_t index() const noexcept {
-    if (__slot <= 1) { return __metadata.__bool_type_index; }
-    if (__slot <= __member_count) { return __metadata.__empty_type_indices[__slot - 2]; }
-    return __member_count; // index, __member_count = __disengaged - 1
+  std::size_t index() const noexcept {
+    return __metadata.__index_of_code[std::bit_cast<unsigned char>(__u)];
   }
 
-  constexpr bool has_value() const noexcept {
-    return __slot != __disengaged;
+  bool has_value() const noexcept {
+    return std::bit_cast<unsigned char>(__u) != __disengaged;
   }
 
   template <size_t I>
   constexpr decltype(auto) get(this auto &&self) noexcept {
-    static_assert(I < __member_count, "Index out of range");
-    assert(self.index() == I && "get: member is not the active one");
-    using self_t = decltype(self);
-    using member_unref_t = std::remove_reference_t<__member_type<I>>;
-    using member_ptr_t = std::conditional_t<std::is_const_v<std::remove_reference_t<self_t>>,
-          member_unref_t const *, member_unref_t *>;
-    if constexpr (I == __metadata.__bool_type_index) {
-      return std::forward_like<self_t>(*reinterpret_cast<member_ptr_t>(&self.__slot));
-    } else {
-      return __member_type<I>{};
-    }
+      static_assert(I < __member_count, "Index out of range");
+      assert(self.index() == I && "get: member is not the active one");
+      if constexpr (I == __metadata.__bool_type_index) {
+          return std::forward_like<decltype(self)>(self.__u.__bool_value);
+      } else {
+          return __member_type<I>{};
+      }
   }
 
   template <class U>
@@ -414,11 +406,14 @@ struct __storage_base<T> : __storage_meta<T>
     static_assert(I < __member_count, "Index out of range");
     assert(!has_value() && "construct: storage already engaged");
     if constexpr (I == __metadata.__bool_type_index) {
-      std::construct_at(reinterpret_cast<bool *>(&__slot), std::forward<Args>(args)...);
+      std::construct_at(&__u.__bool_value, std::forward<Args>(args)...);
     } else {
-      static_assert(sizeof...(Args) == 0, // empty variant
+      static_assert(sizeof...(Args) == 0 ||
+                    (sizeof...(Args) == 1 &&
+                     (std::is_same_v<std::remove_cvref_t<Args>,
+                                     std::remove_cv_t<__member_type<I>>> && ...)),
                     "construct for an empty member requires no arguments");
-      __slot = __metadata.__empty_type_niche_tags[I];
+      std::construct_at(&__u.__state_code, __code_of_member(I));
     }
     return (*this).template get<I>();
   }
@@ -427,10 +422,7 @@ struct __storage_base<T> : __storage_meta<T>
   constexpr void destroy() noexcept {
     static_assert(I < __member_count, "Index out of range");
     assert(index() == I && "destroy: member is not the active one");
-    if constexpr (I == __metadata.__bool_type_index) {
-      std::destroy_at(reinterpret_cast<bool *>(&__slot));
-    }
-    __slot = __disengaged;
+    std::construct_at(&__u.__state_code, __disengaged);
   }
 
 #pragma endregion
@@ -629,7 +621,6 @@ public:
       = delete;
 
   constexpr std::size_t size() const noexcept { return __meta::__member_count; }
-  constexpr std::size_t npos() const noexcept { return __meta::__member_count; }
   constexpr bool has_value() const noexcept { return __s.has_value(); }
   constexpr std::size_t index() const noexcept { return __s.index(); }
 
