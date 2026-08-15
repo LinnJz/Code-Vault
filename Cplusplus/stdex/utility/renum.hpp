@@ -252,7 +252,10 @@ struct __storage_base<T> : __storage_meta<T>
   template <size_t I, class... Args>
   constexpr decltype(auto) construct(Args&&...args) noexcept(
       std::is_reference_v<__member_type<I>> ||
-      std::is_nothrow_constructible_v<__storage_type<I>, Args...>
+      (std::is_array_v<__storage_type<I>>
+         ? (sizeof...(Args) == 0 ||
+            (std::is_nothrow_constructible_v<std::remove_extent_t<__storage_type<I>>, Args> && ...))
+         : std::is_nothrow_constructible_v<__storage_type<I>, Args...>)
   ) {
     static_assert(I < __member_count, "Index out of range");
     assert(!has_value() && "construct: storage already engaged");
@@ -263,6 +266,13 @@ struct __storage_base<T> : __storage_meta<T>
       static_assert(!(std::reference_constructs_from_temporary_v<__member_type<I>, Args> && ...),
                     "construct for a reference member would bind to a temporary");
       std::construct_at(reinterpret_cast<storage_t *>(__storage), std::addressof(std::forward<Args>(args)...));
+    } else if constexpr (std::is_array_v<storage_t>) {
+    // C++23 N5032 [specialized.construct]/2 forbids construct_at with arguments for array
+    // types, so arrays go through a braced placement new instead: each argument
+    // value-initializes one element in place (also works for class element types).
+    static_assert(sizeof...(Args) == 0 || sizeof...(Args) == std::extent_v<storage_t>,
+                  "array member: pass exactly one initializer per element, or none for value-initialization");
+    ::new (static_cast<void *>(__storage)) storage_t{std::forward<Args>(args)...};
     } else {
       std::construct_at(reinterpret_cast<storage_t *>(__storage), std::forward<Args>(args)...);
     }
@@ -464,6 +474,12 @@ constexpr decltype(auto) __at_index(Self&& self, F&& f) {
 template <class T>
 class member_variant {
   using __meta = __storage_meta<T>;
+  static_assert(__meta::__member_count > 0 && 
+      []<std::size_t... Is>(std::index_sequence<Is...>) constexpr noexcept -> bool {
+        return (std::is_destructible_v<std::tuple_element_t<Is, typename __meta::__member_types>> && ...);
+      }(std::make_index_sequence<__meta::__member_count>{}),
+      "variant_builder<T>: all non-static data members of T must satisfy Cpp17Destructible "
+      "requirements (N4950 [variant.variant.general]/2).");
   
 public:
   constexpr member_variant() = default;
